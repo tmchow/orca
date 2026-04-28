@@ -21,10 +21,12 @@ describe('runtime metadata', () => {
     writeRuntimeMetadata(userDataPath, {
       runtimeId: 'rt_123',
       pid: 42,
-      transport: {
-        kind: 'unix',
-        endpoint: '/tmp/orca.sock'
-      },
+      transports: [
+        {
+          kind: 'unix',
+          endpoint: '/tmp/orca.sock'
+        }
+      ],
       authToken: 'secret',
       startedAt: 100
     })
@@ -32,10 +34,12 @@ describe('runtime metadata', () => {
     expect(readRuntimeMetadata(userDataPath)).toEqual({
       runtimeId: 'rt_123',
       pid: 42,
-      transport: {
-        kind: 'unix',
-        endpoint: '/tmp/orca.sock'
-      },
+      transports: [
+        {
+          kind: 'unix',
+          endpoint: '/tmp/orca.sock'
+        }
+      ],
       authToken: 'secret',
       startedAt: 100
     })
@@ -48,7 +52,7 @@ describe('runtime metadata', () => {
     writeRuntimeMetadata(userDataPath, {
       runtimeId: 'rt_123',
       pid: 42,
-      transport: null,
+      transports: [],
       authToken: null,
       startedAt: 100
     })
@@ -68,10 +72,12 @@ describe('runtime metadata', () => {
       writeRuntimeMetadata(userDataPath, {
         runtimeId: 'rt_123',
         pid: 42,
-        transport: {
-          kind: 'unix',
-          endpoint: '/tmp/orca.sock'
-        },
+        transports: [
+          {
+            kind: 'unix',
+            endpoint: '/tmp/orca.sock'
+          }
+        ],
         authToken: 'secret',
         startedAt: 100
       })

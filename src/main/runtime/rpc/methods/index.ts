@@ -1,4 +1,4 @@
-import type { RpcMethod } from '../core'
+import type { RpcAnyMethod } from '../core'
 import { STATUS_METHODS } from './status'
 import { REPO_METHODS } from './repo'
 import { WORKTREE_METHODS } from './worktree'
@@ -10,7 +10,7 @@ import { ORCHESTRATION_METHODS } from './orchestration'
 // Why: a flat manifest keeps registration order explicit and provides one
 // grep-point for "what methods does the RPC server expose?" — useful when
 // auditing the security boundary or wiring new CLI commands.
-export const ALL_RPC_METHODS: readonly RpcMethod[] = [
+export const ALL_RPC_METHODS: readonly RpcAnyMethod[] = [
   ...STATUS_METHODS,
   ...REPO_METHODS,
   ...WORKTREE_METHODS,

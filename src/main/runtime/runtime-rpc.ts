@@ -1,11 +1,9 @@
 // Why: this is the single security boundary for the bundled CLI. It owns
-// transport setup (unix socket / named pipe), auth-token enforcement, and
-// bootstrap-metadata publication so a running runtime is always discoverable
-// via exactly one on-disk file. Method handling lives in `rpc/` so this file
-// stays easy to audit in one sitting.
+// auth-token enforcement, bootstrap-metadata publication, and transport
+// orchestration so a running runtime is always discoverable via exactly
+// one on-disk file. Method handling lives in `rpc/` and transport specifics
+// live in `rpc/unix-socket-transport.ts` and `rpc/ws-transport.ts`.
 import { randomBytes } from 'crypto'
-import { createServer, type Server, type Socket } from 'net'
-import { chmodSync, existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import type { RuntimeMetadata, RuntimeTransportMetadata } from '../../shared/runtime-bootstrap'
 import type { OrcaRuntimeService } from './orca-runtime'
@@ -13,17 +11,22 @@ import { writeRuntimeMetadata } from './runtime-metadata'
 import { RpcDispatcher } from './rpc/dispatcher'
 import type { RpcRequest, RpcResponse } from './rpc/core'
 import { errorResponse } from './rpc/errors'
+import type { RpcTransport } from './rpc/transport'
+import { UnixSocketTransport } from './rpc/unix-socket-transport'
+import { WebSocketTransport } from './rpc/ws-transport'
+import { loadOrCreateTlsCertificate } from './tls-certificate'
+import { DeviceRegistry } from './device-registry'
+
+const DEFAULT_WS_PORT = 6768
 
 type OrcaRuntimeRpcServerOptions = {
   runtime: OrcaRuntimeService
   userDataPath: string
   pid?: number
   platform?: NodeJS.Platform
+  enableWebSocket?: boolean
+  wsPort?: number
 }
-
-const MAX_RUNTIME_RPC_MESSAGE_BYTES = 1024 * 1024
-const RUNTIME_RPC_SOCKET_IDLE_TIMEOUT_MS = 30_000
-const MAX_RUNTIME_RPC_CONNECTIONS = 32
 
 export class OrcaRuntimeRpcServer {
   private readonly runtime: OrcaRuntimeService
@@ -31,104 +34,139 @@ export class OrcaRuntimeRpcServer {
   private readonly userDataPath: string
   private readonly pid: number
   private readonly platform: NodeJS.Platform
+  private readonly enableWebSocket: boolean
+  private readonly wsPort: number
   private readonly authToken = randomBytes(24).toString('hex')
-  private server: Server | null = null
-  private transport: RuntimeTransportMetadata | null = null
+  private deviceRegistry: DeviceRegistry | null = null
+  private tlsFingerprint: string | null = null
+  private activeTransports: RpcTransport[] = []
+  private transports: RuntimeTransportMetadata[] = []
 
   constructor({
     runtime,
     userDataPath,
     pid = process.pid,
-    platform = process.platform
+    platform = process.platform,
+    enableWebSocket = false,
+    wsPort = DEFAULT_WS_PORT
   }: OrcaRuntimeRpcServerOptions) {
     this.runtime = runtime
     this.dispatcher = new RpcDispatcher({ runtime })
     this.userDataPath = userDataPath
     this.pid = pid
     this.platform = platform
+    this.enableWebSocket = enableWebSocket
+    this.wsPort = wsPort
+  }
+
+  getDeviceRegistry(): DeviceRegistry | null {
+    return this.deviceRegistry
+  }
+
+  getTlsFingerprint(): string | null {
+    return this.tlsFingerprint
+  }
+
+  getWebSocketEndpoint(): string | null {
+    const ws = this.transports.find((t) => t.kind === 'websocket')
+    return ws?.endpoint ?? null
   }
 
   async start(): Promise<void> {
-    if (this.server) {
+    if (this.activeTransports.length > 0) {
       return
     }
 
-    const transport = createRuntimeTransportMetadata(
+    const transportMeta = createRuntimeTransportMetadata(
       this.userDataPath,
       this.pid,
       this.platform,
       this.runtime.getRuntimeId()
     )
-    if (transport.kind === 'unix' && existsSync(transport.endpoint)) {
-      rmSync(transport.endpoint, { force: true })
-    }
 
-    const server = createServer((socket) => {
-      this.handleConnection(socket)
+    const socketTransport = new UnixSocketTransport({
+      endpoint: transportMeta.endpoint,
+      kind: transportMeta.kind as 'unix' | 'named-pipe'
     })
-    server.maxConnections = MAX_RUNTIME_RPC_CONNECTIONS
 
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject)
-      server.listen(transport.endpoint, () => {
-        server.off('error', reject)
-        resolve()
+    // Why: Unix socket transport uses the shared runtime auth token. This is
+    // the existing security model for CLI connections — the token lives in a
+    // 0o600-permissioned file on disk.
+    socketTransport.onMessage((msg, reply) => {
+      void this.handleMessage(msg).then((response) => {
+        reply(JSON.stringify(response))
       })
     })
-    if (transport.kind === 'unix') {
-      chmodSync(transport.endpoint, 0o600)
+
+    await socketTransport.start()
+
+    const activeTransports: RpcTransport[] = [socketTransport]
+    const transportsMeta: RuntimeTransportMetadata[] = [transportMeta]
+
+    // Why: WebSocket transport is opt-in and starts alongside the Unix socket.
+    // It uses TLS with a self-signed cert and per-device tokens from the
+    // device registry, not the shared runtime auth token.
+    if (this.enableWebSocket) {
+      try {
+        const tls = loadOrCreateTlsCertificate(this.userDataPath)
+        this.tlsFingerprint = tls.fingerprint
+        this.deviceRegistry = new DeviceRegistry(this.userDataPath)
+
+        const wsTransport = new WebSocketTransport({
+          host: '0.0.0.0',
+          port: this.wsPort,
+          tlsCert: tls.cert,
+          tlsKey: tls.key
+        })
+
+        // Why: WebSocket transport uses dispatchStreaming which can emit
+        // multiple responses for subscription methods. Auth validation
+        // happens before dispatch.
+        wsTransport.onMessage((msg, reply) => {
+          void this.handleWebSocketMessage(msg, reply)
+        })
+
+        await wsTransport.start()
+        activeTransports.push(wsTransport)
+        transportsMeta.push({
+          kind: 'websocket',
+          endpoint: `wss://0.0.0.0:${this.wsPort}`
+        })
+      } catch (error) {
+        // Why: WebSocket transport is supplementary — the runtime must still
+        // function if it fails to start (e.g., port in use). Log and continue
+        // with Unix socket only.
+        console.error('[runtime] Failed to start WebSocket transport:', error)
+      }
     }
 
     // Why: publish the transport into in-memory state before writing metadata
     // so the bootstrap file always contains the real endpoint/token pair. The
     // CLI only discovers the runtime through that file.
-    this.server = server
-    this.transport = transport
+    this.activeTransports = activeTransports
+    this.transports = transportsMeta
 
     try {
       this.writeMetadata()
     } catch (error) {
       // Why: a runtime that cannot publish bootstrap metadata is invisible to
-      // the `orca` CLI. Close the socket immediately instead of leaving behind
-      // a live but undiscoverable control plane.
-      this.server = null
-      this.transport = null
-      await new Promise<void>((resolve, reject) => {
-        server.close((closeError) => {
-          if (closeError) {
-            reject(closeError)
-            return
-          }
-          resolve()
-        })
-      }).catch(() => {})
-      if (transport.kind === 'unix' && existsSync(transport.endpoint)) {
-        rmSync(transport.endpoint, { force: true })
-      }
+      // the `orca` CLI. Close all transports immediately instead of leaving
+      // behind a live but undiscoverable control plane.
+      this.activeTransports = []
+      this.transports = []
+      await Promise.all(activeTransports.map((t) => t.stop().catch(() => {}))).catch(() => {})
       throw error
     }
   }
 
   async stop(): Promise<void> {
-    const server = this.server
-    const transport = this.transport
-    this.server = null
-    this.transport = null
-    if (!server) {
+    const transports = this.activeTransports
+    this.activeTransports = []
+    this.transports = []
+    if (transports.length === 0) {
       return
     }
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => {
-        if (error) {
-          reject(error)
-          return
-        }
-        resolve()
-      })
-    })
-    if (transport?.kind === 'unix' && existsSync(transport.endpoint)) {
-      rmSync(transport.endpoint, { force: true })
-    }
+    await Promise.all(transports.map((t) => t.stop()))
     // Why: we intentionally leave the last metadata file behind instead of
     // deleting it on shutdown. Shared userData paths can briefly host multiple
     // Orca processes during restarts, updates, or development, and stale
@@ -136,44 +174,16 @@ export class OrcaRuntimeRpcServer {
     // bootstrap file.
   }
 
-  private handleConnection(socket: Socket): void {
-    let buffer = ''
-
-    socket.setEncoding('utf8')
-    socket.setNoDelay(true)
-    socket.setTimeout(RUNTIME_RPC_SOCKET_IDLE_TIMEOUT_MS, () => {
-      socket.destroy()
-    })
-    socket.on('error', () => {
-      socket.destroy()
-    })
-    socket.on('data', (chunk: string) => {
-      buffer += chunk
-      // Why: the Orca runtime lives in Electron main, so it must reject
-      // oversized local RPC frames instead of letting a local client grow an
-      // unbounded buffer and stall the app.
-      if (Buffer.byteLength(buffer, 'utf8') > MAX_RUNTIME_RPC_MESSAGE_BYTES) {
-        socket.write(
-          `${JSON.stringify(this.buildError('unknown', 'request_too_large', 'RPC request exceeds the maximum size'))}\n`
-        )
-        socket.end()
-        return
-      }
-      let newlineIndex = buffer.indexOf('\n')
-      while (newlineIndex !== -1) {
-        const rawMessage = buffer.slice(0, newlineIndex).trim()
-        buffer = buffer.slice(newlineIndex + 1)
-        if (rawMessage) {
-          void this.handleMessage(rawMessage).then((response) => {
-            socket.write(`${JSON.stringify(response)}\n`)
-          })
-        }
-        newlineIndex = buffer.indexOf('\n')
-      }
-    })
-  }
-
+  // Why: Unix socket messages use one-shot dispatch (single response per
+  // request) and the shared runtime auth token from the 0o600 metadata file.
   private async handleMessage(rawMessage: string): Promise<RpcResponse> {
+    // Why: empty messages are sent by the Unix socket transport layer when a
+    // client exceeds the max message size. The transport closes the connection
+    // after this response.
+    if (!rawMessage) {
+      return this.buildError('unknown', 'request_too_large', 'RPC request exceeds the maximum size')
+    }
+
     let request: RpcRequest
     try {
       request = JSON.parse(rawMessage) as RpcRequest
@@ -197,6 +207,45 @@ export class OrcaRuntimeRpcServer {
     return this.dispatcher.dispatch(request)
   }
 
+  // Why: WebSocket messages go through streaming dispatch which can emit
+  // multiple responses. Auth uses per-device tokens from the device registry.
+  private async handleWebSocketMessage(
+    rawMessage: string,
+    reply: (response: string) => void
+  ): Promise<void> {
+    let request: RpcRequest
+    try {
+      request = JSON.parse(rawMessage) as RpcRequest
+    } catch {
+      reply(JSON.stringify(this.buildError('unknown', 'bad_request', 'Invalid JSON request')))
+      return
+    }
+
+    if (typeof request.id !== 'string' || request.id.length === 0) {
+      reply(JSON.stringify(this.buildError('unknown', 'bad_request', 'Missing request id')))
+      return
+    }
+    if (typeof request.method !== 'string' || request.method.length === 0) {
+      reply(JSON.stringify(this.buildError(request.id, 'bad_request', 'Missing RPC method')))
+      return
+    }
+
+    const token =
+      typeof (request as Record<string, unknown>).deviceToken === 'string'
+        ? ((request as Record<string, unknown>).deviceToken as string)
+        : null
+    if (!token) {
+      reply(JSON.stringify(this.buildError(request.id, 'unauthorized', 'Missing device token')))
+      return
+    }
+    if (!this.deviceRegistry?.validateToken(token)) {
+      reply(JSON.stringify(this.buildError(request.id, 'unauthorized', 'Invalid device token')))
+      return
+    }
+
+    await this.dispatcher.dispatchStreaming(request, reply)
+  }
+
   private buildError(id: string, code: string, message: string): RpcResponse {
     return errorResponse(id, { runtimeId: this.runtime.getRuntimeId() }, code, message)
   }
@@ -205,7 +254,7 @@ export class OrcaRuntimeRpcServer {
     const metadata: RuntimeMetadata = {
       runtimeId: this.runtime.getRuntimeId(),
       pid: this.pid,
-      transport: this.transport,
+      transports: this.transports,
       authToken: this.authToken,
       startedAt: this.runtime.getStartedAt()
     }

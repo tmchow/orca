@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { defineMethod, type RpcMethod } from '../core'
+import { defineMethod, defineStreamingMethod, type RpcAnyMethod } from '../core'
 import { OptionalFiniteNumber, OptionalString, requiredString } from '../schemas'
 
 const TerminalHandle = z.object({
@@ -77,7 +77,13 @@ const TerminalStop = z.object({
   worktree: requiredString('Missing worktree selector')
 })
 
-export const TERMINAL_METHODS: RpcMethod[] = [
+const TerminalSubscribe = TerminalHandle.extend({})
+
+const TerminalUnsubscribe = z.object({
+  subscriptionId: requiredString('Missing subscription ID')
+})
+
+export const TERMINAL_METHODS: RpcAnyMethod[] = [
   defineMethod({
     name: 'terminal.list',
     params: TerminalListParams,
@@ -170,5 +176,49 @@ export const TERMINAL_METHODS: RpcMethod[] = [
     handler: async (params, { runtime }) => ({
       close: await runtime.closeTerminal(params.terminal)
     })
+  }),
+  // Why: terminal.subscribe streams live terminal output over WebSocket.
+  // It sends initial scrollback, then live data chunks as they arrive.
+  // Only works over streaming-capable transports (WebSocket, not Unix socket).
+  defineStreamingMethod({
+    name: 'terminal.subscribe',
+    params: TerminalSubscribe,
+    handler: async (params, { runtime }, emit) => {
+      const read = await runtime.readTerminal(params.terminal)
+      emit({ type: 'scrollback', lines: read.tail, truncated: read.truncated })
+
+      const leaf = runtime.resolveLeafForHandle(params.terminal)
+      if (!leaf?.ptyId) {
+        emit({ type: 'end' })
+        return
+      }
+
+      // Why: the handler returns a Promise that never resolves (until
+      // unsubscribe or disconnect). The emit callback pushes data chunks
+      // as they arrive. Cleanup happens via the unsubscribe mechanism or
+      // connection-scoped cleanup in the transport layer.
+      await new Promise<void>((resolve) => {
+        const unsubscribe = runtime.subscribeToTerminalData(leaf.ptyId!, (data) => {
+          emit({ type: 'data', chunk: data })
+        })
+
+        // Why: store the cleanup function so terminal.unsubscribe and
+        // connection-close cleanup can call it.
+        const subscriptionId = params.terminal
+        runtime.registerSubscriptionCleanup(subscriptionId, () => {
+          unsubscribe()
+          emit({ type: 'end' })
+          resolve()
+        })
+      })
+    }
+  }),
+  defineMethod({
+    name: 'terminal.unsubscribe',
+    params: TerminalUnsubscribe,
+    handler: async (params, { runtime }) => {
+      runtime.cleanupSubscription(params.subscriptionId)
+      return { unsubscribed: true }
+    }
   })
 ]
