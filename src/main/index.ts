@@ -435,7 +435,8 @@ app.whenReady().then(async () => {
   })
   runtimeRpc = new OrcaRuntimeRpcServer({
     runtime,
-    userDataPath: app.getPath('userData')
+    userDataPath: app.getPath('userData'),
+    enableWebSocket: true
   })
   registerMobileHandlers(runtimeRpc)
 
