@@ -17,6 +17,7 @@ import {
 } from './layout-serialization'
 import { warnTerminalLifecycleAnomaly } from './terminal-lifecycle-diagnostics'
 import { detectDeveloperPermissionHint } from './developer-permission-hints'
+import { registerPtySerializer } from './pty-buffer-serializer'
 
 const pendingSpawnByPaneKey = new Map<string, Promise<string | null>>()
 const developerPermissionHintKeys = new Set<string>()
@@ -553,6 +554,26 @@ export function connectPanePty(
       }
       deps.syncPanePtyLayoutBinding(pane.id, ptyId)
       deps.updateTabPtyId(deps.tabId, ptyId)
+
+      // Why: mobile terminal streaming needs the exact screen state from
+      // xterm.js. Register a serializer for this ptyId so the main process
+      // can request a buffer snapshot when a mobile client subscribes.
+      const unregisterSerializer = registerPtySerializer(ptyId, () => {
+        try {
+          return {
+            data: pane.serializeAddon.serialize(),
+            cols: pane.terminal.cols,
+            rows: pane.terminal.rows
+          }
+        } catch {
+          return null
+        }
+      })
+      const origOnDataDisposableDispose = onDataDisposable.dispose.bind(onDataDisposable)
+      onDataDisposable.dispose = () => {
+        unregisterSerializer()
+        origOnDataDisposableDispose()
+      }
 
       if (connectResult?.coldRestore) {
         // Why: restoreScrollbackBuffers() already wrote the saved xterm

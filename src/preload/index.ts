@@ -360,6 +360,21 @@ const api = {
         callback(data)
       ipcRenderer.on('pty:exit', listener)
       return () => ipcRenderer.removeListener('pty:exit', listener)
+    },
+
+    onSerializeBufferRequest: (
+      callback: (data: { requestId: string; ptyId: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { requestId: string; ptyId: string }
+      ) => callback(data)
+      ipcRenderer.on('pty:serializeBuffer:request', listener)
+      return () => ipcRenderer.removeListener('pty:serializeBuffer:request', listener)
+    },
+
+    sendSerializedBuffer: (requestId: string, data: string | null): void => {
+      ipcRenderer.send('pty:serializeBuffer:response', { requestId, data })
     }
   },
 
@@ -1729,6 +1744,23 @@ const api = {
   },
   e2e: {
     getConfig: () => preloadE2EConfig
+  },
+
+  mobile: {
+    getPairingQR: (): Promise<
+      | { available: false }
+      | { available: true; qrDataUrl: string; endpoint: string; deviceId: string }
+    > => ipcRenderer.invoke('mobile:getPairingQR'),
+
+    listDevices: (): Promise<{
+      devices: { deviceId: string; name: string; pairedAt: number; lastSeenAt: number }[]
+    }> => ipcRenderer.invoke('mobile:listDevices'),
+
+    revokeDevice: (args: { deviceId: string }): Promise<{ revoked: boolean }> =>
+      ipcRenderer.invoke('mobile:revokeDevice', args),
+
+    isWebSocketReady: (): Promise<{ ready: boolean; endpoint: string | null }> =>
+      ipcRenderer.invoke('mobile:isWebSocketReady')
   },
 
   agentStatus: {

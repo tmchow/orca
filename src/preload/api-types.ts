@@ -914,6 +914,17 @@ export type PreloadApi = {
       }) => void
     ) => () => void
   }
+  mobile: {
+    getPairingQR: () => Promise<
+      | { available: false }
+      | { available: true; qrDataUrl: string; endpoint: string; deviceId: string }
+    >
+    listDevices: () => Promise<{
+      devices: { deviceId: string; name: string; pairedAt: number; lastSeenAt: number }[]
+    }>
+    revokeDevice: (args: { deviceId: string }) => Promise<{ revoked: boolean }>
+    isWebSocketReady: () => Promise<{ ready: boolean; endpoint: string | null }>
+  }
 }
 
 declare global {

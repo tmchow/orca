@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Palette,
   Server,
+  Smartphone,
   SlidersHorizontal,
   Blocks,
   SquareTerminal,
@@ -35,6 +36,7 @@ import { getTerminalPaneSearchEntries } from './terminal-search'
 import { GitPane, GIT_PANE_SEARCH_ENTRIES } from './GitPane'
 import { NotificationsPane, NOTIFICATIONS_PANE_SEARCH_ENTRIES } from './NotificationsPane'
 import { SshPane, SSH_PANE_SEARCH_ENTRIES } from './SshPane'
+import { MobilePane, MOBILE_PANE_SEARCH_ENTRIES } from './MobilePane'
 import { ExperimentalPane, EXPERIMENTAL_PANE_SEARCH_ENTRIES } from './ExperimentalPane'
 import { AgentsPane, AGENTS_PANE_SEARCH_ENTRIES } from './AgentsPane'
 import { AccountsPane, ACCOUNTS_PANE_SEARCH_ENTRIES } from './AccountsPane'
@@ -63,6 +65,7 @@ type SettingsNavTarget =
   | 'ssh'
   | 'experimental'
   | 'agents'
+  | 'mobile'
   | 'repo'
 
 type SettingsNavSection = {
@@ -384,6 +387,14 @@ function Settings(): React.JSX.Element {
         description: 'Orca stats and Claude usage analytics.',
         icon: BarChart3,
         searchEntries: STATS_PANE_SEARCH_ENTRIES
+      },
+      {
+        id: 'mobile',
+        title: 'Mobile',
+        description: 'Pair a mobile device to control Orca remotely.',
+        icon: Smartphone,
+        searchEntries: MOBILE_PANE_SEARCH_ENTRIES,
+        badge: 'Beta'
       },
       {
         id: 'ssh',
@@ -710,6 +721,16 @@ function Settings(): React.JSX.Element {
                   searchEntries={STATS_PANE_SEARCH_ENTRIES}
                 >
                   <StatsPane />
+                </SettingsSection>
+
+                <SettingsSection
+                  id="mobile"
+                  title="Mobile"
+                  badge="Beta"
+                  description="Pair a mobile device by scanning a QR code to control Orca remotely."
+                  searchEntries={MOBILE_PANE_SEARCH_ENTRIES}
+                >
+                  <MobilePane />
                 </SettingsSection>
 
                 <SettingsSection
