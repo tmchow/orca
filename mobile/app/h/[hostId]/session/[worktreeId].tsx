@@ -234,7 +234,9 @@ export default function SessionScreen() {
         </ScrollView>
       )}
 
-      <TerminalWebView ref={termRef} />
+      <View style={styles.terminalFrame}>
+        <TerminalWebView ref={termRef} />
+      </View>
 
       <View style={styles.inputBar}>
         <TextInput
@@ -305,6 +307,11 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: '#e0e0e0'
+  },
+  terminalFrame: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden'
   },
   inputBar: {
     flexDirection: 'row',

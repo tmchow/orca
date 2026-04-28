@@ -17,69 +17,43 @@ type TerminalMessage =
   | { type: 'clear' }
 
 // Why: TUI apps (Claude Code / Ink) emit escape codes with absolute cursor
-// positioning designed for the desktop's terminal dimensions (~150 cols).
-// Rendering at phone-native dimensions (55 cols) garbles TUI output because
-// row/col coordinates don't match. Instead, we initialize xterm at the
-// desktop's exact cols/rows and use CSS transform: scale() to shrink the
-// canvas to fit the phone viewport. This produces an accurate miniature of
-// the desktop screen. Pinch-to-zoom is enabled for readability.
+// positioning designed for the desktop's terminal dimensions (~150+ cols).
+// We initialize xterm at the desktop's exact cols/rows so those escape codes
+// render correctly, then CSS-scale the canvas to fit the phone viewport.
+// The WebView's native pinch-to-zoom handles zoom — it works correctly with
+// scroll in all directions and zooms around the pinch center point.
 const XTERM_HTML = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=0.5, maximum-scale=5, user-scalable=yes">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.1.0-beta.198/css/xterm.min.css">
+<meta name="viewport" content="width=device-width, initial-scale=0.5, minimum-scale=0.2, maximum-scale=4, user-scalable=yes">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
-    width: 100%;
-    height: 100%;
-    overflow: auto;
     background: #1a1b26;
-    -webkit-overflow-scrolling: touch;
+    overflow: auto;
   }
   #terminal-container {
-    transform-origin: top left;
-    overflow: visible;
+    display: inline-block;
   }
 </style>
 </head>
 <body>
 <div id="terminal-container"></div>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.1.0-beta.198/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script>
 (function() {
-  var FONT_SIZE = 13;
-
   var container = document.getElementById('terminal-container');
   var term = null;
   var writeQueue = [];
   var ready = false;
-  var currentScale = 1;
-
-  function applyScale() {
-    if (!term) return;
-    var screen = container.querySelector('.xterm-screen');
-    if (!screen) return;
-    var termWidth = screen.offsetWidth;
-    var viewWidth = window.innerWidth;
-    if (termWidth > viewWidth) {
-      currentScale = viewWidth / termWidth;
-      container.style.transform = 'scale(' + currentScale + ')';
-      container.style.width = (100 / currentScale) + '%';
-    } else {
-      currentScale = 1;
-      container.style.transform = 'none';
-      container.style.width = '100%';
-    }
-  }
 
   function init(cols, rows) {
     ready = false;
     writeQueue = [];
     if (term) term.dispose();
-    container.style.transform = 'none';
-    container.style.width = '100%';
+
     term = new Terminal({
       cols: cols || 80,
       rows: rows || 24,
@@ -107,7 +81,7 @@ const XTERM_HTML = `<!DOCTYPE html>
         brightWhite: '#c0caf5'
       },
       fontFamily: '"Menlo", "Consolas", "DejaVu Sans Mono", monospace',
-      fontSize: FONT_SIZE,
+      fontSize: 13,
       scrollback: 5000,
       disableStdin: true,
       cursorBlink: false,
@@ -117,14 +91,14 @@ const XTERM_HTML = `<!DOCTYPE html>
       allowProposedApi: true
     });
     term.open(container);
+
     requestAnimationFrame(function() {
-      applyScale();
       ready = true;
       for (var i = 0; i < writeQueue.length; i++) {
         term.write(writeQueue[i]);
       }
       writeQueue = [];
-      notify({ type: 'ready' });
+      notify({ type: 'ready', cols: cols, rows: rows });
     });
   }
 
@@ -195,13 +169,10 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(
 
     const postMessage = useCallback(
       (msg: TerminalMessage) => {
-        // Why: React Native drops postMessage calls made before the WebView page
-        // has installed its message handlers, so terminal output must wait here.
         if (!isWebReadyRef.current) {
           pendingMessagesRef.current.push(msg)
           return
         }
-
         sendToWebView(msg)
       },
       [sendToWebView]
@@ -253,10 +224,7 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(
         javaScriptEnabled
         scrollEnabled
         nestedScrollEnabled
-        showsVerticalScrollIndicator={false}
-        setBuiltInZoomControls={false}
         scalesPageToFit={false}
-        androidLayerType="none"
         onLoadStart={handleLoadStart}
         onMessage={handleMessage}
       />
