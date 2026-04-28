@@ -564,7 +564,16 @@ export function registerPtyHandlers(
       // state and dimensions before live TUI chunks can render correctly.
       return requestSerializedBuffer(ptyId)
     },
-    getSize: (ptyId) => ptySizes.get(ptyId) ?? null
+    getSize: (ptyId) => ptySizes.get(ptyId) ?? null,
+    resize: (ptyId, cols, rows) => {
+      try {
+        ptySizes.set(ptyId, { cols, rows })
+        getProviderForPty(ptyId).resize(ptyId, cols, rows)
+        return true
+      } catch {
+        return false
+      }
+    }
   })
 
   // ─── IPC Handlers (thin dispatch layer) ─────────────────────────

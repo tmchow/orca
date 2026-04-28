@@ -9,6 +9,8 @@ import type { PtyConnectResult } from './pty-transport'
 import { createIpcPtyTransport } from './pty-transport'
 import { shouldSeedCacheTimerOnInitialTitle } from './cache-timer-seeding'
 import type { PtyConnectionDeps } from './pty-connection-types'
+import { safeFit } from '@/lib/pane-manager/pane-tree-ops'
+import { getFitOverrideForPane, bindPanePtyId } from '@/lib/pane-manager/mobile-fit-overrides'
 import { isPaneReplaying, replayIntoTerminal } from './replay-guard'
 import {
   paneLeafId,
@@ -210,6 +212,7 @@ export function connectPanePty(
   }
 
   const onPtySpawn = (ptyId: string): void => {
+    bindPanePtyId(pane.id, ptyId)
     deps.syncPanePtyLayoutBinding(pane.id, ptyId)
     deps.updateTabPtyId(deps.tabId, ptyId)
     // Spawn completion is when a pane gains a concrete PTY ID. The initial
@@ -390,6 +393,12 @@ export function connectPanePty(
   })
 
   const onResizeDisposable = pane.terminal.onResize(({ cols, rows }) => {
+    // Why: when a mobile-fit override is active, the PTY is already at the
+    // correct phone dimensions. Suppress resize forwarding to avoid spurious
+    // SIGWINCH signals that could cause TUI flicker.
+    if (getFitOverrideForPane(pane.id)) {
+      return
+    }
     transport.resize(cols, rows)
   })
 
@@ -401,11 +410,7 @@ export function connectPanePty(
     if (disposed) {
       return
     }
-    try {
-      pane.fitAddon.fit()
-    } catch {
-      /* ignore */
-    }
+    safeFit(pane)
     const cols = pane.terminal.cols
     const rows = pane.terminal.rows
 
@@ -552,6 +557,7 @@ export function connectPanePty(
         startFreshSpawn()
         return
       }
+      bindPanePtyId(pane.id, ptyId)
       deps.syncPanePtyLayoutBinding(pane.id, ptyId)
       deps.updateTabPtyId(deps.tabId, ptyId)
 
@@ -632,7 +638,11 @@ export function connectPanePty(
         })
       }
 
-      transport.resize(cols, rows)
+      // Why: when a mobile-fit override is active, skip sending desktop dims
+      // to the PTY — the PTY is already at phone dimensions and must stay there.
+      if (!getFitOverrideForPane(pane.id)) {
+        transport.resize(cols, rows)
+      }
       // Why: POSIX only delivers SIGWINCH when terminal dimensions actually
       // change. Sending it explicitly guarantees restored TUIs repaint at
       // the correct cursor position after snapshot replay.

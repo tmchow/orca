@@ -8,6 +8,8 @@ export type TerminalWebViewHandle = {
   write: (data: string) => void
   init: (cols: number, rows: number) => void
   clear: () => void
+  measureFitDimensions: () => Promise<{ cols: number; rows: number } | null>
+  resetZoom: () => void
 }
 
 type Props = object
@@ -16,6 +18,8 @@ type TerminalMessage =
   | { type: 'write'; data: string }
   | { type: 'init'; cols: number; rows: number }
   | { type: 'clear' }
+  | { type: 'measure' }
+  | { type: 'reset-zoom' }
 
 // Why: TUI apps (Claude Code / Ink) emit escape codes with absolute cursor
 // positioning designed for the desktop's terminal dimensions (~150+ cols).
@@ -133,6 +137,7 @@ const XTERM_HTML = `<!DOCTYPE html>
       }
       writeQueue = [];
       applyFitScale();
+      window.scrollTo(0, 0);
       notify({ type: 'ready', cols: cols, rows: rows });
     });
   }
@@ -151,6 +156,32 @@ const XTERM_HTML = `<!DOCTYPE html>
     }
   }
 
+  function measureFitDimensions() {
+    if (!term || !term.element) {
+      notify({ type: 'measure-result', cols: null, rows: null });
+      return;
+    }
+    // Why: measure actual xterm cell dimensions from the renderer, not from
+    // font metrics alone. This accounts for the exact font, size, and line
+    // height that xterm is using.
+    var core = term._core;
+    var cellWidth = 0;
+    var cellHeight = 0;
+    if (core && core._renderService && core._renderService.dimensions) {
+      cellWidth = core._renderService.dimensions.css.cell.width;
+      cellHeight = core._renderService.dimensions.css.cell.height;
+    }
+    if (cellWidth <= 0 || cellHeight <= 0) {
+      notify({ type: 'measure-result', cols: null, rows: null });
+      return;
+    }
+    var vpWidth = window.innerWidth;
+    var vpHeight = window.innerHeight;
+    var cols = Math.floor(vpWidth / cellWidth);
+    var rows = Math.floor(vpHeight / cellHeight);
+    notify({ type: 'measure-result', cols: cols, rows: rows });
+  }
+
   function handleMsg(msg) {
     if (msg.type === 'init') {
       init(msg.cols, msg.rows);
@@ -159,6 +190,11 @@ const XTERM_HTML = `<!DOCTYPE html>
     } else if (msg.type === 'clear') {
       writeQueue = [];
       if (term) { term.clear(); term.reset(); }
+    } else if (msg.type === 'measure') {
+      measureFitDimensions();
+    } else if (msg.type === 'reset-zoom') {
+      applyFitScale();
+      window.scrollTo(0, 0);
     }
   }
 
@@ -193,6 +229,9 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(
     const webViewRef = useRef<WebView>(null)
     const isWebReadyRef = useRef(false)
     const pendingMessagesRef = useRef<TerminalMessage[]>([])
+    const measureResolveRef = useRef<
+      ((result: { cols: number; rows: number } | null) => void) | null
+    >(null)
 
     const sendToWebView = useCallback((msg: TerminalMessage) => {
       webViewRef.current?.postMessage(JSON.stringify(msg))
@@ -229,6 +268,14 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(
         if (msg.type === 'web-ready') {
           isWebReadyRef.current = true
           flushPendingMessages()
+        } else if (msg.type === 'measure-result') {
+          const resolve = measureResolveRef.current
+          measureResolveRef.current = null
+          if (resolve) {
+            const cols = typeof msg.cols === 'number' ? msg.cols : null
+            const rows = typeof msg.rows === 'number' ? msg.rows : null
+            resolve(cols && rows && cols >= 20 && rows >= 8 ? { cols, rows } : null)
+          }
         }
       },
       [flushPendingMessages]
@@ -249,9 +296,28 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(
         },
         clear() {
           postMessage({ type: 'clear' })
+        },
+        measureFitDimensions(): Promise<{ cols: number; rows: number } | null> {
+          if (!isWebReadyRef.current) return Promise.resolve(null)
+          return new Promise((resolve) => {
+            measureResolveRef.current = resolve
+            sendToWebView({ type: 'measure' })
+            // Why: if the WebView doesn't respond within 2s (e.g., xterm
+            // failed to load), resolve null so the caller can disable
+            // Fit to Phone rather than hanging indefinitely.
+            setTimeout(() => {
+              if (measureResolveRef.current === resolve) {
+                measureResolveRef.current = null
+                resolve(null)
+              }
+            }, 2000)
+          })
+        },
+        resetZoom() {
+          postMessage({ type: 'reset-zoom' })
         }
       }),
-      [postMessage]
+      [postMessage, sendToWebView]
     )
 
     return (

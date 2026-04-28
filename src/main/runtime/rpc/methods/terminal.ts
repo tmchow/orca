@@ -77,6 +77,21 @@ const TerminalStop = z.object({
   worktree: requiredString('Missing worktree selector')
 })
 
+const TerminalResizeForClient = z.discriminatedUnion('mode', [
+  z.object({
+    terminal: requiredString('Missing terminal handle'),
+    mode: z.literal('mobile-fit'),
+    cols: z.number().finite().positive(),
+    rows: z.number().finite().positive(),
+    clientId: requiredString('Missing client ID')
+  }),
+  z.object({
+    terminal: requiredString('Missing terminal handle'),
+    mode: z.literal('restore'),
+    clientId: requiredString('Missing client ID')
+  })
+])
+
 const TerminalSubscribe = TerminalHandle.extend({})
 
 const TerminalUnsubscribe = z.object({
@@ -162,6 +177,29 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
     name: 'terminal.stop',
     params: TerminalStop,
     handler: async (params, { runtime }) => runtime.stopTerminalsForWorktree(params.worktree)
+  }),
+  defineMethod({
+    name: 'terminal.resizeForClient',
+    params: TerminalResizeForClient,
+    handler: async (params, { runtime }) => {
+      const leaf = runtime.resolveLeafForHandle(params.terminal)
+      if (!leaf?.ptyId) {
+        throw new Error('no_connected_pty')
+      }
+      const result = runtime.resizeForClient(
+        leaf.ptyId,
+        params.mode,
+        params.clientId,
+        params.mode === 'mobile-fit' ? params.cols : undefined,
+        params.mode === 'mobile-fit' ? params.rows : undefined
+      )
+      return {
+        terminal: {
+          handle: params.terminal,
+          ...result
+        }
+      }
+    }
   }),
   defineMethod({
     name: 'terminal.focus',

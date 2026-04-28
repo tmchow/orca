@@ -1,5 +1,6 @@
 import type { DropZone, ManagedPaneInternal, PaneStyleOptions } from './pane-manager-types'
 import { createDivider } from './pane-divider'
+import { getFitOverrideForPane } from './mobile-fit-overrides'
 
 export { findLineByContent, captureScrollState, restoreScrollState } from './pane-scroll'
 
@@ -35,6 +36,18 @@ function getProposedDimensions(pane: ManagedPaneInternal): { cols: number; rows:
 // safeFit here just fits and lets the scheduled restore do its job.
 export function safeFit(pane: ManagedPaneInternal): void {
   try {
+    // Why: when a mobile client has resized this PTY to phone dimensions,
+    // the desktop must keep xterm at those dimensions instead of fitting to
+    // the desktop pane geometry. This prevents desktop auto-fit from undoing
+    // the mobile resize.
+    const override = getFitOverrideForPane(pane.id)
+    if (override) {
+      if (pane.terminal.cols !== override.cols || pane.terminal.rows !== override.rows) {
+        pane.terminal.resize(override.cols, override.rows)
+      }
+      return
+    }
+
     const dims = getProposedDimensions(pane)
     if (dims && dims.cols === pane.terminal.cols && dims.rows === pane.terminal.rows) {
       // Why: divider drags fire refits every frame, but most frames do not

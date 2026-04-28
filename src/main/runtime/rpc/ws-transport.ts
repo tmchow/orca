@@ -25,7 +25,13 @@ export class WebSocketTransport implements RpcTransport {
   private readonly tlsKey: string | undefined
   private httpServer: HttpsServer | HttpServer | null = null
   private wss: WebSocketServer | null = null
-  private messageHandler: ((msg: string, reply: (response: string) => void) => void) | null = null
+  private messageHandler:
+    | ((msg: string, reply: (response: string) => void, ws: WebSocket) => void)
+    | null = null
+  private connectionCloseHandler: ((clientId: string) => void) | null = null
+  // Why: maps each WebSocket to the clientId (deviceToken) that authenticated it,
+  // so ws.on('close') can notify the runtime which mobile client disconnected.
+  private wsClientIds = new Map<WebSocket, string>()
 
   constructor({ host, port, tlsCert, tlsKey }: WebSocketTransportOptions) {
     this.host = host
@@ -34,8 +40,18 @@ export class WebSocketTransport implements RpcTransport {
     this.tlsKey = tlsKey
   }
 
-  onMessage(handler: (msg: string, reply: (response: string) => void) => void): void {
+  onMessage(
+    handler: (msg: string, reply: (response: string) => void, ws: WebSocket) => void
+  ): void {
     this.messageHandler = handler
+  }
+
+  onConnectionClose(handler: (clientId: string) => void): void {
+    this.connectionCloseHandler = handler
+  }
+
+  setClientId(ws: WebSocket, clientId: string): void {
+    this.wsClientIds.set(ws, clientId)
   }
 
   async start(): Promise<void> {
@@ -109,13 +125,28 @@ export class WebSocketTransport implements RpcTransport {
   private handleConnection(ws: WebSocket): void {
     ws.on('message', (data) => {
       const msg = typeof data === 'string' ? data : data.toString('utf-8')
-      this.messageHandler?.(msg, (response) => {
-        // Why: mobile clients disconnect frequently (backgrounding, network
-        // switch, phone locked). Guard writes to avoid errors on dead sockets.
-        if (ws.readyState === ws.OPEN) {
-          ws.send(response)
-        }
-      })
+      this.messageHandler?.(
+        msg,
+        (response) => {
+          // Why: mobile clients disconnect frequently (backgrounding, network
+          // switch, phone locked). Guard writes to avoid errors on dead sockets.
+          if (ws.readyState === ws.OPEN) {
+            ws.send(response)
+          }
+        },
+        ws
+      )
+    })
+
+    // Why: mobile clients disconnect when the phone locks, loses wifi, or
+    // backgrounds the app. The runtime must clean up connection-scoped state
+    // (e.g., mobile-fit overrides) to prevent orphaned phone-fit on desktop.
+    ws.on('close', () => {
+      const clientId = this.wsClientIds.get(ws)
+      this.wsClientIds.delete(ws)
+      if (clientId) {
+        this.connectionCloseHandler?.(clientId)
+      }
     })
 
     ws.on('error', () => {

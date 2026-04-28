@@ -157,6 +157,7 @@ type RuntimePtyController = {
   write(ptyId: string, data: string): boolean
   kill(ptyId: string): boolean
   getForegroundProcess(ptyId: string): Promise<string | null>
+  resize?(ptyId: string, cols: number, rows: number): boolean
   listProcesses?(): Promise<{ id: string; cwd: string; title: string }[]>
   serializeBuffer?(ptyId: string): Promise<{ data: string; cols: number; rows: number } | null>
   getSize?(ptyId: string): { cols: number; rows: number } | null
@@ -175,6 +176,12 @@ type RuntimeNotifier = {
   renameTerminal(tabId: string, title: string | null): void
   focusTerminal(tabId: string, worktreeId: string): void
   closeTerminal(tabId: string, paneRuntimeId?: number): void
+  terminalFitOverrideChanged(
+    ptyId: string,
+    mode: 'mobile-fit' | 'desktop-fit',
+    cols: number,
+    rows: number
+  ): void
 }
 
 type TerminalHandleRecord = {
@@ -264,6 +271,21 @@ export class OrcaRuntimeService {
   private dataListeners = new Map<string, Set<(data: string) => void>>()
   private subscriptionCleanups = new Map<string, () => void>()
   private ptysById = new Map<string, RuntimePtyWorktreeRecord>()
+  // Why: mobile-fit overrides are keyed by ptyId (not terminal handle) because
+  // handles can be reissued while the PTY identity is stable. In-memory only —
+  // a stale phone override should not survive an app restart.
+  private terminalFitOverrides = new Map<
+    string,
+    {
+      mode: 'mobile-fit'
+      cols: number
+      rows: number
+      previousCols: number | null
+      previousRows: number | null
+      updatedAt: number
+      clientId: string
+    }
+  >()
 
   constructor(store: RuntimeStore | null = null, stats?: StatsCollector) {
     this.store = store
@@ -596,7 +618,134 @@ export class OrcaRuntimeService {
     }
   }
 
+  // ─── Mobile Fit Override Management ─────────────────────────
+
+  resizeForClient(
+    ptyId: string,
+    mode: 'mobile-fit' | 'restore',
+    clientId: string,
+    cols?: number,
+    rows?: number
+  ): {
+    cols: number
+    rows: number
+    previousCols: number | null
+    previousRows: number | null
+    mode: 'mobile-fit' | 'desktop-fit'
+  } {
+    if (mode === 'mobile-fit') {
+      if (cols == null || rows == null || !Number.isFinite(cols) || !Number.isFinite(rows)) {
+        throw new Error('invalid_dimensions')
+      }
+      const clampedCols = Math.max(20, Math.min(240, Math.round(cols)))
+      const clampedRows = Math.max(8, Math.min(120, Math.round(rows)))
+
+      const currentSize = this.getTerminalSize(ptyId)
+      const existing = this.terminalFitOverrides.get(ptyId)
+      // Why: preserve the original desktop size from before any mobile-fit,
+      // so restore returns to the right dimensions even after multiple re-fits.
+      const previousCols = existing?.previousCols ?? currentSize?.cols ?? null
+      const previousRows = existing?.previousRows ?? currentSize?.rows ?? null
+
+      this.terminalFitOverrides.set(ptyId, {
+        mode: 'mobile-fit',
+        cols: clampedCols,
+        rows: clampedRows,
+        previousCols,
+        previousRows,
+        updatedAt: Date.now(),
+        clientId
+      })
+
+      const resized = this.ptyController?.resize?.(ptyId, clampedCols, clampedRows)
+      if (!resized) {
+        this.terminalFitOverrides.delete(ptyId)
+        throw new Error('resize_failed')
+      }
+
+      this.notifier?.terminalFitOverrideChanged(ptyId, 'mobile-fit', clampedCols, clampedRows)
+
+      return {
+        cols: clampedCols,
+        rows: clampedRows,
+        previousCols,
+        previousRows,
+        mode: 'mobile-fit'
+      }
+    }
+
+    // restore mode
+    const override = this.terminalFitOverrides.get(ptyId)
+    if (!override) {
+      throw new Error('no_active_override')
+    }
+    // Why: only the owning client can restore, preventing one phone from
+    // undoing another phone's active fit.
+    if (override.clientId !== clientId) {
+      throw new Error('not_override_owner')
+    }
+
+    const { previousCols: prevCols, previousRows: prevRows } = override
+    this.terminalFitOverrides.delete(ptyId)
+
+    // Why: always resize the PTY back to pre-fit dimensions immediately,
+    // even for mounted leaves. Relying solely on the renderer chain
+    // (IPC notification → safeFit → fitAddon.fit → onResize → transport.resize)
+    // is fragile — any async gap leaves the PTY at phone dims while xterm
+    // looks correct, causing text to wrap at the wrong column. The renderer
+    // will still run safeFit and may send a second resize with the exact
+    // current pane geometry, which is harmless (SIGWINCH is idempotent).
+    if (prevCols != null && prevRows != null) {
+      this.ptyController?.resize?.(ptyId, prevCols, prevRows)
+    }
+
+    // Why: send the restored dimensions so the renderer can fall back to a
+    // direct terminal.resize() if fitAddon.fit() silently fails. The renderer
+    // normally computes desktop dims from the container, but passing them here
+    // provides a guaranteed fallback to avoid leaving xterm at phone dims.
+    this.notifier?.terminalFitOverrideChanged(ptyId, 'desktop-fit', prevCols ?? 0, prevRows ?? 0)
+
+    return {
+      cols: prevCols ?? 0,
+      rows: prevRows ?? 0,
+      previousCols: null,
+      previousRows: null,
+      mode: 'desktop-fit'
+    }
+  }
+
+  getTerminalFitOverride(ptyId: string) {
+    return this.terminalFitOverrides.get(ptyId) ?? null
+  }
+
+  getAllTerminalFitOverrides(): Map<string, { mode: 'mobile-fit'; cols: number; rows: number }> {
+    const result = new Map<string, { mode: 'mobile-fit'; cols: number; rows: number }>()
+    for (const [ptyId, override] of this.terminalFitOverrides) {
+      result.set(ptyId, { mode: override.mode, cols: override.cols, rows: override.rows })
+    }
+    return result
+  }
+
+  onClientDisconnected(clientId: string): void {
+    for (const [ptyId, override] of this.terminalFitOverrides) {
+      if (override.clientId !== clientId) {
+        continue
+      }
+      try {
+        this.resizeForClient(ptyId, 'restore', clientId)
+      } catch {
+        // Best-effort cleanup — the PTY may already be gone.
+        this.terminalFitOverrides.delete(ptyId)
+        this.notifier?.terminalFitOverrideChanged(ptyId, 'desktop-fit', 0, 0)
+      }
+    }
+  }
+
   onPtyExit(ptyId: string, exitCode: number): void {
+    if (this.terminalFitOverrides.has(ptyId)) {
+      this.terminalFitOverrides.delete(ptyId)
+      this.notifier?.terminalFitOverrideChanged(ptyId, 'desktop-fit', 0, 0)
+    }
     this.agentDetector?.onExit(ptyId)
     const pty = this.ptysById.get(ptyId)
     if (pty) {

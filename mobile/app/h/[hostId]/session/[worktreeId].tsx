@@ -12,7 +12,7 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { ArrowUp, ChevronLeft, Plus } from 'lucide-react-native'
+import { ArrowUp, ChevronLeft, Monitor, Plus, Smartphone } from 'lucide-react-native'
 import { connect, type RpcClient } from '../../../../src/transport/rpc-client'
 import { loadHosts } from '../../../../src/transport/host-store'
 import type { ConnectionState, RpcSuccess } from '../../../../src/transport/types'
@@ -80,12 +80,138 @@ export default function SessionScreen() {
   const [createError, setCreateError] = useState('')
   const [actionTarget, setActionTarget] = useState<Terminal | null>(null)
   const [renameTarget, setRenameTarget] = useState<Terminal | null>(null)
+  const [fittedHandles, setFittedHandles] = useState<Set<string>>(new Set())
+  const [fitPending, setFitPending] = useState(false)
+  const deviceTokenRef = useRef<string | null>(null)
+  const fittedHandlesRef = useRef<Set<string>>(fittedHandles)
+  fittedHandlesRef.current = fittedHandles
+  // Why: tracks terminals the user explicitly restored to desktop size.
+  // Without this, switching away and back would auto-fit them again.
+  const manuallyRestoredRef = useRef<Set<string>>(new Set())
+  // Why: only auto-fit terminals created during this mobile session.
+  // Existing desktop terminals should keep their desktop dimensions until
+  // the user explicitly chooses "Fit to Phone".
+  const mobileCreatedHandlesRef = useRef<Set<string>>(new Set())
   const termRef = useRef<TerminalWebViewHandle>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const activeHandleRef = useRef<string | null>(null)
   const subscribeSeqRef = useRef(0)
 
   const canSend = connState === 'connected' && activeHandle != null
+
+  // Why: after a fit/restore resize the PTY grid changes, so we must
+  // resubscribe to get a fresh scrollback snapshot at the new geometry.
+  // We skip terminal.focus to avoid a race where the desktop renderer
+  // auto-fits the pane back to desktop dimensions before the override
+  // takes effect.
+  const resubscribeWithoutFocus = useCallback(
+    (handle: string) => {
+      unsubRef.current?.()
+      if (!client) return
+
+      termRef.current?.clear()
+      const seq = subscribeSeqRef.current + 1
+      subscribeSeqRef.current = seq
+
+      void (async () => {
+        if (subscribeSeqRef.current !== seq || activeHandleRef.current !== handle) {
+          return
+        }
+
+        const unsub = client.subscribe('terminal.subscribe', { terminal: handle }, (result) => {
+          if (subscribeSeqRef.current !== seq || activeHandleRef.current !== handle) {
+            return
+          }
+          const data = result as Record<string, unknown>
+          if (data.type === 'scrollback') {
+            const cols = (data.cols as number) || 80
+            const rows = (data.rows as number) || 24
+            termRef.current?.init(cols, rows)
+            if (typeof data.serialized === 'string' && data.serialized.length > 0) {
+              termRef.current?.write(data.serialized)
+            } else {
+              writeLines(data.lines as string[] | string | undefined)
+            }
+          } else if (data.type === 'data') {
+            termRef.current?.write(data.chunk as string)
+          }
+        })
+
+        if (subscribeSeqRef.current === seq && activeHandleRef.current === handle) {
+          unsubRef.current = unsub
+        } else {
+          unsub()
+        }
+      })()
+    },
+    [client, writeLines]
+  )
+
+  // Why: extracted so both manual "Fit to Phone" and auto-fit-on-subscribe
+  // can share the same measure → resize → resubscribe logic. Takes explicit
+  // handle/rpcClient to avoid stale closure issues from subscribe callbacks.
+  const fitToPhoneCore = useCallback(
+    async (handle: string, rpcClient: RpcClient) => {
+      const clientId = deviceTokenRef.current
+      if (!clientId) return
+
+      const dims = await termRef.current?.measureFitDimensions()
+      if (!dims) return
+
+      const response = await rpcClient.sendRequest('terminal.resizeForClient', {
+        terminal: handle,
+        mode: 'mobile-fit',
+        cols: dims.cols,
+        rows: dims.rows,
+        clientId
+      })
+      if (!response.ok) return
+
+      setFittedHandles((prev) => new Set(prev).add(handle))
+      resubscribeWithoutFocus(handle)
+      setTimeout(() => termRef.current?.resetZoom(), 500)
+    },
+    [resubscribeWithoutFocus]
+  )
+
+  const handleFitToPhone = useCallback(async () => {
+    if (!client || !activeHandle || fitPending) return
+
+    manuallyRestoredRef.current.delete(activeHandle)
+    setFitPending(true)
+    try {
+      await fitToPhoneCore(activeHandle, client)
+    } finally {
+      setFitPending(false)
+    }
+  }, [client, activeHandle, fitPending, fitToPhoneCore])
+
+  const handleRestoreDesktopSize = useCallback(async () => {
+    if (!client || !activeHandle) return
+    const handle = activeHandle
+    const clientId = deviceTokenRef.current
+    if (!clientId) return
+
+    try {
+      const response = await client.sendRequest('terminal.resizeForClient', {
+        terminal: handle,
+        mode: 'restore',
+        clientId
+      })
+      if (!response.ok) return
+
+      manuallyRestoredRef.current.add(handle)
+      setFittedHandles((prev) => {
+        const next = new Set(prev)
+        next.delete(handle)
+        return next
+      })
+      resubscribeWithoutFocus(handle)
+      setTimeout(() => termRef.current?.resetZoom(), 500)
+    } catch {
+      // Restore failed — keep current state.
+    }
+  }, [client, activeHandle, resubscribeWithoutFocus])
 
   useEffect(() => {
     let rpcClient: RpcClient | null = null
@@ -95,6 +221,7 @@ export default function SessionScreen() {
       const host = hosts.find((h) => h.id === hostId)
       if (!host) return
 
+      deviceTokenRef.current = host.deviceToken
       rpcClient = connect(host.endpoint, host.deviceToken, setConnState)
       setClient(rpcClient)
     })()
@@ -132,6 +259,7 @@ export default function SessionScreen() {
       termRef.current?.clear()
       const seq = subscribeSeqRef.current + 1
       subscribeSeqRef.current = seq
+      const rpcClient = client
 
       void (async () => {
         try {
@@ -162,6 +290,22 @@ export default function SessionScreen() {
             } else {
               writeLines(data.lines as string[] | string | undefined)
             }
+            // Why: only auto-fit terminals created during this mobile session.
+            // Existing desktop terminals keep their dimensions until the user
+            // explicitly chooses "Fit to Phone" — auto-fitting every terminal
+            // on subscribe was confusing because it showed "Restore Desktop
+            // Size" for terminals the user never intentionally resized.
+            if (
+              mobileCreatedHandlesRef.current.has(handle) &&
+              !fittedHandlesRef.current.has(handle) &&
+              !manuallyRestoredRef.current.has(handle)
+            ) {
+              setTimeout(() => {
+                if (activeHandleRef.current === handle && subscribeSeqRef.current === seq) {
+                  void fitToPhoneCore(handle, rpcClient)
+                }
+              }, 600)
+            }
           } else if (data.type === 'data') {
             termRef.current?.write(data.chunk as string)
           }
@@ -174,7 +318,7 @@ export default function SessionScreen() {
         }
       })()
     },
-    [client, writeLines]
+    [client, writeLines, fitToPhoneCore]
   )
 
   const fetchTerminals = useCallback(
@@ -301,6 +445,7 @@ export default function SessionScreen() {
       if (response.ok) {
         const result = (response as RpcSuccess).result as TerminalCreateResult
         const created = result.terminal
+        mobileCreatedHandlesRef.current.add(created.handle)
         activeHandleRef.current = created.handle
         setActiveHandle(created.handle)
         setTerminals((prev) => [
@@ -536,6 +681,27 @@ export default function SessionScreen() {
         visible={actionTarget != null}
         title={actionTarget?.title || 'Terminal'}
         actions={[
+          ...(actionTarget && fittedHandles.has(actionTarget.handle)
+            ? [
+                {
+                  label: 'Restore Desktop Size',
+                  icon: Monitor,
+                  onPress: () => {
+                    setActionTarget(null)
+                    void handleRestoreDesktopSize()
+                  }
+                }
+              ]
+            : [
+                {
+                  label: fitPending ? 'Fitting…' : 'Fit to Phone',
+                  icon: Smartphone,
+                  onPress: () => {
+                    setActionTarget(null)
+                    void handleFitToPhone()
+                  }
+                }
+              ]),
           {
             label: 'Rename',
             onPress: () => {

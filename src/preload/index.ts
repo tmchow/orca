@@ -1598,7 +1598,27 @@ const api = {
   runtime: {
     syncWindowGraph: (graph: RuntimeSyncWindowGraph): Promise<RuntimeStatus> =>
       ipcRenderer.invoke('runtime:syncWindowGraph', graph),
-    getStatus: (): Promise<RuntimeStatus> => ipcRenderer.invoke('runtime:getStatus')
+    getStatus: (): Promise<RuntimeStatus> => ipcRenderer.invoke('runtime:getStatus'),
+    getTerminalFitOverrides: (): Promise<
+      { ptyId: string; mode: 'mobile-fit'; cols: number; rows: number }[]
+    > => ipcRenderer.invoke('runtime:getTerminalFitOverrides'),
+    restoreTerminalFit: (ptyId: string): Promise<{ restored: boolean }> =>
+      ipcRenderer.invoke('runtime:restoreTerminalFit', { ptyId }),
+    onTerminalFitOverrideChanged: (
+      callback: (event: {
+        ptyId: string
+        mode: 'mobile-fit' | 'desktop-fit'
+        cols: number
+        rows: number
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { ptyId: string; mode: 'mobile-fit' | 'desktop-fit'; cols: number; rows: number }
+      ) => callback(data)
+      ipcRenderer.on('runtime:terminalFitOverrideChanged', listener)
+      return () => ipcRenderer.removeListener('runtime:terminalFitOverrideChanged', listener)
+    }
   },
 
   rateLimits: {

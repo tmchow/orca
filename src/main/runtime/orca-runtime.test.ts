@@ -1487,6 +1487,188 @@ describe('OrcaRuntimeService', () => {
     ])
   })
 
+  describe('terminal fit overrides', () => {
+    function createRuntimeWithResize() {
+      const runtime = new OrcaRuntimeService(store)
+      const resizes: { ptyId: string; cols: number; rows: number }[] = []
+      const notifications: {
+        ptyId: string
+        mode: string
+        cols: number
+        rows: number
+      }[] = []
+      runtime.setPtyController({
+        write: () => true,
+        kill: () => true,
+        resize: (ptyId, cols, rows) => {
+          resizes.push({ ptyId, cols, rows })
+          return true
+        },
+        getSize: () => ({ cols: 150, rows: 40 })
+      })
+      runtime.setNotifier({
+        worktreesChanged: vi.fn(),
+        reposChanged: vi.fn(),
+        activateWorktree: vi.fn(),
+        createTerminal: vi.fn(),
+        splitTerminal: vi.fn(),
+        renameTerminal: vi.fn(),
+        focusTerminal: vi.fn(),
+        closeTerminal: vi.fn(),
+        terminalFitOverrideChanged: (ptyId, mode, cols, rows) => {
+          notifications.push({ ptyId, mode, cols, rows })
+        }
+      })
+      return { runtime, resizes, notifications }
+    }
+
+    it('clamps dimensions within valid range', () => {
+      const { runtime, resizes } = createRuntimeWithResize()
+      const result = runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 10, 5)
+      expect(result.cols).toBe(20)
+      expect(result.rows).toBe(8)
+      expect(resizes[0]).toEqual({ ptyId: 'pty-1', cols: 20, rows: 8 })
+    })
+
+    it('clamps large dimensions to upper bounds', () => {
+      const { runtime } = createRuntimeWithResize()
+      const result = runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 500, 300)
+      expect(result.cols).toBe(240)
+      expect(result.rows).toBe(120)
+    })
+
+    it('rejects missing dimensions for mobile-fit', () => {
+      const { runtime } = createRuntimeWithResize()
+      expect(() => runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a')).toThrow(
+        'invalid_dimensions'
+      )
+    })
+
+    it('rejects NaN dimensions', () => {
+      const { runtime } = createRuntimeWithResize()
+      expect(() => runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', NaN, 24)).toThrow(
+        'invalid_dimensions'
+      )
+    })
+
+    it('preserves original previousSize across re-fits', () => {
+      const { runtime } = createRuntimeWithResize()
+      const first = runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 80, 24)
+      expect(first.previousCols).toBe(150)
+      expect(first.previousRows).toBe(40)
+
+      const second = runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 60, 20)
+      expect(second.previousCols).toBe(150)
+      expect(second.previousRows).toBe(40)
+    })
+
+    it('restores for the owning client and resizes PTY back', () => {
+      const { runtime, resizes, notifications } = createRuntimeWithResize()
+      runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 80, 24)
+      const result = runtime.resizeForClient('pty-1', 'restore', 'client-a')
+      expect(result.mode).toBe('desktop-fit')
+      expect(result.cols).toBe(150)
+      expect(result.rows).toBe(40)
+      expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
+      expect(notifications).toHaveLength(2)
+      expect(notifications[1]).toMatchObject({ ptyId: 'pty-1', mode: 'desktop-fit' })
+      expect(resizes).toEqual([
+        { ptyId: 'pty-1', cols: 80, rows: 24 },
+        { ptyId: 'pty-1', cols: 150, rows: 40 }
+      ])
+    })
+
+    it('rejects restore from non-owning client', () => {
+      const { runtime } = createRuntimeWithResize()
+      runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 80, 24)
+      expect(() => runtime.resizeForClient('pty-1', 'restore', 'client-b')).toThrow(
+        'not_override_owner'
+      )
+    })
+
+    it('rejects restore when no override exists', () => {
+      const { runtime } = createRuntimeWithResize()
+      expect(() => runtime.resizeForClient('pty-1', 'restore', 'client-a')).toThrow(
+        'no_active_override'
+      )
+    })
+
+    it('allows a second client to overwrite the first (latest-writer-wins)', () => {
+      const { runtime } = createRuntimeWithResize()
+      runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 80, 24)
+      runtime.resizeForClient('pty-1', 'mobile-fit', 'client-b', 60, 20)
+
+      expect(() => runtime.resizeForClient('pty-1', 'restore', 'client-a')).toThrow(
+        'not_override_owner'
+      )
+      const result = runtime.resizeForClient('pty-1', 'restore', 'client-b')
+      expect(result.mode).toBe('desktop-fit')
+    })
+
+    it('auto-restores on client disconnect', () => {
+      const { runtime } = createRuntimeWithResize()
+      runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 80, 24)
+      runtime.resizeForClient('pty-2', 'mobile-fit', 'client-a', 60, 20)
+      runtime.resizeForClient('pty-3', 'mobile-fit', 'client-b', 40, 15)
+
+      runtime.onClientDisconnected('client-a')
+
+      expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
+      expect(runtime.getTerminalFitOverride('pty-2')).toBeNull()
+      expect(runtime.getTerminalFitOverride('pty-3')).not.toBeNull()
+    })
+
+    it('clears override on PTY exit', () => {
+      const { runtime, notifications } = createRuntimeWithResize()
+      runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 80, 24)
+      runtime.onPtyExit('pty-1', 0)
+
+      expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
+      const exitNotification = notifications.find(
+        (n) => n.ptyId === 'pty-1' && n.mode === 'desktop-fit'
+      )
+      expect(exitNotification).toBeTruthy()
+    })
+
+    it('returns all active overrides via getAllTerminalFitOverrides', () => {
+      const { runtime } = createRuntimeWithResize()
+      runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 80, 24)
+      runtime.resizeForClient('pty-2', 'mobile-fit', 'client-b', 60, 20)
+
+      const all = runtime.getAllTerminalFitOverrides()
+      expect(all.size).toBe(2)
+      expect(all.get('pty-1')).toEqual({ mode: 'mobile-fit', cols: 80, rows: 24 })
+      expect(all.get('pty-2')).toEqual({ mode: 'mobile-fit', cols: 60, rows: 20 })
+    })
+
+    it('rolls back override if resize fails', () => {
+      const runtime = new OrcaRuntimeService(store)
+      runtime.setPtyController({
+        write: () => true,
+        kill: () => true,
+        resize: () => false
+      })
+
+      expect(() => runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 80, 24)).toThrow(
+        'resize_failed'
+      )
+      expect(runtime.getTerminalFitOverride('pty-1')).toBeNull()
+    })
+
+    it('notifies renderer on mobile-fit', () => {
+      const { runtime, notifications } = createRuntimeWithResize()
+      runtime.resizeForClient('pty-1', 'mobile-fit', 'client-a', 80, 24)
+
+      expect(notifications).toHaveLength(1)
+      expect(notifications[0]).toEqual({
+        ptyId: 'pty-1',
+        mode: 'mobile-fit',
+        cols: 80,
+        rows: 24
+      })
+    })
+  })
+
   describe('browser page targeting', () => {
     it('passes explicit page ids through without resolving the current worktree', async () => {
       vi.mocked(listWorktrees).mockClear()

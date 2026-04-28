@@ -14,6 +14,7 @@ import { errorResponse } from './rpc/errors'
 import type { RpcTransport } from './rpc/transport'
 import { UnixSocketTransport } from './rpc/unix-socket-transport'
 import { WebSocketTransport } from './rpc/ws-transport'
+import type { WebSocket } from 'ws'
 import { DeviceRegistry } from './device-registry'
 
 const DEFAULT_WS_PORT = 6768
@@ -121,8 +122,15 @@ export class OrcaRuntimeRpcServer {
         // Why: WebSocket transport uses dispatchStreaming which can emit
         // multiple responses for subscription methods. Auth validation
         // happens before dispatch.
-        wsTransport.onMessage((msg, reply) => {
-          void this.handleWebSocketMessage(msg, reply)
+        wsTransport.onMessage((msg, reply, ws) => {
+          void this.handleWebSocketMessage(msg, reply, wsTransport, ws)
+        })
+
+        // Why: when a mobile client disconnects, the runtime must clean up
+        // connection-scoped state like mobile-fit overrides to prevent
+        // orphaned phone-fit state on the desktop terminal.
+        wsTransport.onConnectionClose((clientId) => {
+          this.runtime.onClientDisconnected(clientId)
         })
 
         await wsTransport.start()
@@ -210,7 +218,9 @@ export class OrcaRuntimeRpcServer {
   // multiple responses. Auth uses per-device tokens from the device registry.
   private async handleWebSocketMessage(
     rawMessage: string,
-    reply: (response: string) => void
+    reply: (response: string) => void,
+    wsTransport?: WebSocketTransport,
+    ws?: WebSocket
   ): Promise<void> {
     let request: RpcRequest
     try {
@@ -240,6 +250,12 @@ export class OrcaRuntimeRpcServer {
     if (!this.deviceRegistry?.validateToken(token)) {
       reply(JSON.stringify(this.buildError(request.id, 'unauthorized', 'Invalid device token')))
       return
+    }
+
+    // Why: associate the deviceToken with this WebSocket so ws.on('close')
+    // can notify the runtime which mobile client disconnected.
+    if (wsTransport && ws) {
+      wsTransport.setClientId(ws, token)
     }
 
     await this.dispatcher.dispatchStreaming(request, reply)

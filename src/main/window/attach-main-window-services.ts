@@ -249,6 +249,16 @@ function registerRuntimeWindowLifecycle(
       if (!mainWindow.isDestroyed()) {
         mainWindow.webContents.send('ui:closeTerminal', { tabId, paneRuntimeId })
       }
+    },
+    terminalFitOverrideChanged: (ptyId, mode, cols, rows) => {
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('runtime:terminalFitOverrideChanged', {
+          ptyId,
+          mode,
+          cols,
+          rows
+        })
+      }
     }
   })
   // Why: the runtime must fail closed while the renderer graph is being torn

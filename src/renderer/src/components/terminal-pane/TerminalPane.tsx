@@ -28,6 +28,12 @@ import { useTerminalPaneLifecycle } from './use-terminal-pane-lifecycle'
 import { useTerminalPaneContextMenu } from './use-terminal-pane-context-menu'
 import { useNotificationDispatch } from './use-notification-dispatch'
 import { connectPanePty } from './pty-connection'
+import {
+  getFitOverrideForPane,
+  getPaneIdsForPty,
+  onOverrideChange
+} from '@/lib/pane-manager/mobile-fit-overrides'
+import { safeFit } from '@/lib/pane-manager/pane-tree-ops'
 
 /** Global set of buffer-capture callbacks, one per mounted TerminalPane.
  *  The beforeunload handler in App.tsx invokes every callback to populate
@@ -99,6 +105,66 @@ export default function TerminalPane({
   const searchStateRef = useRef<SearchState>({ query: '', caseSensitive: false, regex: false })
   const [closeConfirmPaneId, setCloseConfirmPaneId] = useState<number | null>(null)
   const [terminalError, setTerminalError] = useState<string | null>(null)
+  // Why: override state lives in a plain Map for perf (safeFit reads it on
+  // every resize). This counter forces a re-render when overrides change so
+  // the mobile-fit banner appears/disappears. When an override is cleared
+  // (desktop-fit), we also trigger safeFit on affected panes so the terminal
+  // resizes back to desktop dimensions.
+  const [, setOverrideTick] = useState(0)
+  useEffect(
+    () =>
+      onOverrideChange((event) => {
+        setOverrideTick((n) => n + 1)
+        if (event.mode === 'desktop-fit') {
+          const paneIds = getPaneIdsForPty(event.ptyId)
+          const manager = managerRef.current
+          if (!manager) {
+            return
+          }
+          // Why: fitAddon.fit() measures DOM dimensions, so it must run after
+          // the browser has settled layout. Running synchronously inside the
+          // IPC callback can produce stale measurements. rAF ensures the DOM
+          // is ready. The follow-up timeout acts as a safety net: if
+          // fitAddon.fit() silently threw (its errors are caught), the timeout
+          // falls back to a direct terminal.resize() using the restored
+          // dimensions from the runtime. This guarantees xterm exits mobile
+          // dims even when the DOM-based fit path fails.
+          const fitAffectedPanes = (): void => {
+            for (const paneId of paneIds) {
+              const pane = manager.getPanes().find((p) => p.id === paneId)
+              if (pane) {
+                safeFit(pane)
+              }
+            }
+          }
+          requestAnimationFrame(fitAffectedPanes)
+          // Why: belt-and-suspenders — if safeFit's fitAddon.fit() threw or
+          // was a no-op due to stale dimensions, this fallback uses the
+          // restored cols/rows from the runtime to force the resize. If
+          // safeFit already succeeded, the terminal is already at the right
+          // dims and this is a harmless no-op.
+          setTimeout(() => {
+            for (const paneId of paneIds) {
+              const pane = manager.getPanes().find((p) => p.id === paneId)
+              if (!pane) {
+                continue
+              }
+              safeFit(pane)
+              // Fallback: if terminal is still at mobile dims, force resize
+              // using the restored dimensions from the runtime notification.
+              if (
+                event.cols > 0 &&
+                event.rows > 0 &&
+                (pane.terminal.cols !== event.cols || pane.terminal.rows !== event.rows)
+              ) {
+                pane.terminal.resize(event.cols, event.rows)
+              }
+            }
+          }, 100)
+        }
+      }),
+    []
+  )
 
   // Pane title state — keyed by ephemeral paneId, persisted via titlesByLeafId
   // in the layout snapshot. Ref keeps persistLayoutSnapshot closures fresh.
@@ -1028,6 +1094,57 @@ export default function TerminalPane({
           </div>,
           pane.container,
           `pane-title-${pane.id}`
+        )
+      })}
+      {(managerRef.current?.getPanes() ?? []).map((pane) => {
+        const override = getFitOverrideForPane(pane.id)
+        if (!override) {
+          return null
+        }
+        return createPortal(
+          <div
+            key={`mobile-fit-${pane.id}`}
+            className="mobile-fit-banner"
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              zIndex: 10,
+              padding: '4px 12px',
+              background: 'var(--orca-banner-bg, rgba(75, 85, 99, 0.92))',
+              color: 'var(--orca-banner-fg, #e5e7eb)',
+              fontSize: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}
+          >
+            <span>
+              Terminal resized for phone ({override.cols}×{override.rows})
+            </span>
+            <button
+              style={{
+                background: 'transparent',
+                border: '1px solid currentColor',
+                borderRadius: '3px',
+                color: 'inherit',
+                padding: '1px 8px',
+                cursor: 'pointer',
+                fontSize: '11px'
+              }}
+              onClick={() => {
+                const ptyId = paneTransportsRef.current.get(pane.id)?.getPtyId()
+                if (ptyId) {
+                  void window.api.runtime.restoreTerminalFit(ptyId)
+                }
+              }}
+            >
+              Restore
+            </button>
+          </div>,
+          pane.container,
+          `mobile-fit-banner-${pane.id}`
         )
       })}
       <CloseTerminalDialog

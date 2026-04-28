@@ -4,6 +4,7 @@ import { colors, spacing, radii, typography } from '../theme/mobile-theme'
 
 export type ActionSheetAction = {
   label: string
+  icon?: LucideIcon
   destructive?: boolean
   onPress: () => void
 }
@@ -16,7 +17,8 @@ type Props = {
   onClose: () => void
 }
 
-function iconForAction(label: string, destructive?: boolean): LucideIcon {
+function iconForAction(label: string, destructive?: boolean, icon?: LucideIcon): LucideIcon {
+  if (icon) return icon
   if (destructive || /delete|remove/i.test(label)) return Trash2
   return Edit3
 }
@@ -43,7 +45,7 @@ export function ActionSheetModal({ visible, title, message, actions, onClose }: 
 
           <View style={styles.actions}>
             {actions.map((action) => {
-              const Icon = iconForAction(action.label, action.destructive)
+              const Icon = iconForAction(action.label, action.destructive, action.icon)
               return (
                 <Pressable
                   key={action.label}
