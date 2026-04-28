@@ -142,6 +142,8 @@ type RuntimePtyController = {
   write(ptyId: string, data: string): boolean
   kill(ptyId: string): boolean
   getForegroundProcess(ptyId: string): Promise<string | null>
+  serializeBuffer?(ptyId: string): Promise<{ data: string; cols: number; rows: number } | null>
+  getSize?(ptyId: string): { cols: number; rows: number } | null
 }
 
 type RuntimeNotifier = {
@@ -505,6 +507,16 @@ export class OrcaRuntimeService {
         this.dataListeners.delete(ptyId)
       }
     }
+  }
+
+  serializeTerminalBuffer(
+    ptyId: string
+  ): Promise<{ data: string; cols: number; rows: number } | null> {
+    return this.ptyController?.serializeBuffer?.(ptyId) ?? Promise.resolve(null)
+  }
+
+  getTerminalSize(ptyId: string): { cols: number; rows: number } | null {
+    return this.ptyController?.getSize?.(ptyId) ?? null
   }
 
   resolveLeafForHandle(handle: string): { ptyId: string | null } | null {

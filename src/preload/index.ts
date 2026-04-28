@@ -373,8 +373,11 @@ const api = {
       return () => ipcRenderer.removeListener('pty:serializeBuffer:request', listener)
     },
 
-    sendSerializedBuffer: (requestId: string, data: string | null): void => {
-      ipcRenderer.send('pty:serializeBuffer:response', { requestId, data })
+    sendSerializedBuffer: (
+      requestId: string,
+      snapshot: { data: string; cols: number; rows: number } | null
+    ): void => {
+      ipcRenderer.send('pty:serializeBuffer:response', { requestId, snapshot })
     }
   },
 

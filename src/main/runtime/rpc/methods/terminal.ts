@@ -185,9 +185,18 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
     params: TerminalSubscribe,
     handler: async (params, { runtime }, emit) => {
       const read = await runtime.readTerminal(params.terminal)
-      emit({ type: 'scrollback', lines: read.tail, truncated: read.truncated })
-
       const leaf = runtime.resolveLeafForHandle(params.terminal)
+      const serialized = leaf?.ptyId ? await runtime.serializeTerminalBuffer(leaf.ptyId) : null
+      const size = leaf?.ptyId ? runtime.getTerminalSize(leaf.ptyId) : null
+      emit({
+        type: 'scrollback',
+        lines: read.tail,
+        truncated: read.truncated,
+        serialized: serialized?.data,
+        cols: serialized?.cols ?? size?.cols,
+        rows: serialized?.rows ?? size?.rows
+      })
+
       if (!leaf?.ptyId) {
         emit({ type: 'end' })
         return

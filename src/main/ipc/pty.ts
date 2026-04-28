@@ -35,6 +35,9 @@ const sshProviders = new Map<string, IPtyProvider>()
 // post-spawn operations to the correct provider without the renderer needing
 // to track connectionId per-PTY.
 const ptyOwnership = new Map<string, string | null>()
+// Why: mobile clients must mirror desktop PTY geometry even when the renderer
+// cannot provide an xterm snapshot yet, such as immediately after tab creation.
+const ptySizes = new Map<string, { cols: number; rows: number }>()
 // Why: the agent-hooks server caches per-paneKey state (last prompt, last
 // tool) that otherwise grows unbounded as panes come and go. Track the
 // spawn-time paneKey so clearProviderPtyState can clear that cache on PTY
@@ -280,6 +283,7 @@ export function clearProviderPtyState(id: string): void {
   // new teardown path forgets to remove one provider's overlay/hook state.
   openCodeHookService.clearPty(id)
   piTitlebarExtensionService.clearPty(id)
+  ptySizes.delete(id)
   // Why: drop the memory-collector registration so a dead PTY does not keep
   // trying to resolve its (now-dead) pid on every snapshot. Safe no-op for
   // PTYs that were never registered (SSH-owned).
@@ -448,6 +452,54 @@ export function registerPtyHandlers(
     }
   })
 
+  function requestSerializedBuffer(
+    ptyId: string
+  ): Promise<{ data: string; cols: number; rows: number } | null> {
+    if (mainWindow.isDestroyed()) {
+      return Promise.resolve(null)
+    }
+
+    const requestId = randomUUID()
+    return new Promise((resolve) => {
+      const cleanup = (): void => {
+        clearTimeout(timeout)
+        ipcMain.removeListener('pty:serializeBuffer:response', onResponse)
+      }
+
+      const timeout = setTimeout(() => {
+        cleanup()
+        resolve(null)
+      }, 750)
+
+      const onResponse = (
+        _event: Electron.IpcMainEvent,
+        args: {
+          requestId?: string
+          snapshot?: { data?: unknown; cols?: unknown; rows?: unknown } | null
+        }
+      ): void => {
+        if (args.requestId !== requestId) {
+          return
+        }
+        cleanup()
+        const snapshot = args.snapshot
+        if (
+          snapshot &&
+          typeof snapshot.data === 'string' &&
+          typeof snapshot.cols === 'number' &&
+          typeof snapshot.rows === 'number'
+        ) {
+          resolve({ data: snapshot.data, cols: snapshot.cols, rows: snapshot.rows })
+        } else {
+          resolve(null)
+        }
+      }
+
+      ipcMain.on('pty:serializeBuffer:response', onResponse)
+      mainWindow.webContents.send('pty:serializeBuffer:request', { requestId, ptyId })
+    })
+  }
+
   // Kill orphaned PTY processes from previous page loads when the renderer reloads.
   // Why: only applies to LocalPtyProvider where PTYs live in the Electron main
   // process and can become orphaned on page reload. Daemon-backed sessions
@@ -499,7 +551,13 @@ export function registerPtyHandlers(
       } catch {
         return null
       }
-    }
+    },
+    serializeBuffer: (ptyId) => {
+      // Why: mobile xterm must start from the desktop xterm's exact screen
+      // state and dimensions before live TUI chunks can render correctly.
+      return requestSerializedBuffer(ptyId)
+    },
+    getSize: (ptyId) => ptySizes.get(ptyId) ?? null
   })
 
   // ─── IPC Handlers (thin dispatch layer) ─────────────────────────
@@ -678,6 +736,7 @@ export function registerPtyHandlers(
       if (preAllocatedHandle) {
         runtime?.registerPreAllocatedHandleForPty(result.id, preAllocatedHandle)
       }
+      ptySizes.set(result.id, { cols: args.cols, rows: args.rows })
       if (isClaudeLaunch) {
         markClaudePtySpawned(result.id)
       }
@@ -744,6 +803,7 @@ export function registerPtyHandlers(
   // empty acknowledgement message back to the renderer.
   ipcMain.removeAllListeners('pty:resize')
   ipcMain.on('pty:resize', (_event, args: { id: string; cols: number; rows: number }) => {
+    ptySizes.set(args.id, { cols: args.cols, rows: args.rows })
     getProviderForPty(args.id).resize(args.id, args.cols, args.rows)
   })
 

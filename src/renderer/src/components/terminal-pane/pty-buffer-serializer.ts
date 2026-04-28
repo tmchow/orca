@@ -25,6 +25,6 @@ function ensureSerializerListener(): void {
   window.api.pty.onSerializeBufferRequest((request) => {
     const serializer = serializersByPtyId.get(request.ptyId)
     const result = serializer?.()
-    window.api.pty.sendSerializedBuffer(request.requestId, result?.data ?? null)
+    window.api.pty.sendSerializedBuffer(request.requestId, result ?? null)
   })
 }

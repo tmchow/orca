@@ -34,6 +34,7 @@ export default function SessionScreen() {
   const termRef = useRef<TerminalWebViewHandle>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const activeHandleRef = useRef<string | null>(null)
+  const subscribeSeqRef = useRef(0)
   const terminalSizeRef = useRef({ cols: 80, rows: 24 })
 
   useEffect(() => {
@@ -79,33 +80,58 @@ export default function SessionScreen() {
       if (!client) return
 
       termRef.current?.clear()
+      const seq = subscribeSeqRef.current + 1
+      subscribeSeqRef.current = seq
 
-      const unsub = client.subscribe('terminal.subscribe', { terminal: handle }, (result) => {
-        const data = result as Record<string, unknown>
-        if (data.type === 'scrollback') {
-          // Why: init xterm at the desktop's exact cols/rows so escape
-          // codes with absolute cursor positioning render correctly.
-          // CSS transform: scale() in TerminalWebView shrinks the canvas
-          // to fit the phone viewport, producing a 1:1 miniature.
-          const cols = (data.cols as number) || 80
-          const rows = (data.rows as number) || 24
-          terminalSizeRef.current = { cols, rows }
-          termRef.current?.init(cols, rows)
-          // Why: prefer serialized xterm buffer (ANSI escape string that
-          // reconstructs the exact screen state) over line-based tail
-          // because TUI apps use absolute cursor positioning that only
-          // works at the original terminal dimensions.
-          if (typeof data.serialized === 'string' && data.serialized.length > 0) {
-            termRef.current?.write(data.serialized)
-          } else {
-            writeLines(data.lines as string[] | string | undefined)
-          }
-        } else if (data.type === 'data') {
-          termRef.current?.write(data.chunk as string)
+      void (async () => {
+        try {
+          // Why: hidden/new desktop panes can still be at their 80x24 spawn
+          // geometry. Focusing first lets the desktop renderer fit xterm,
+          // resize the PTY, and register a serializer before mobile subscribes.
+          await client.sendRequest('terminal.focus', { terminal: handle })
+          await new Promise((resolve) => setTimeout(resolve, 150))
+        } catch {
+          // Continue with best-effort streaming if desktop focus is unavailable.
         }
-      })
 
-      unsubRef.current = unsub
+        if (subscribeSeqRef.current !== seq || activeHandleRef.current !== handle) {
+          return
+        }
+
+        const unsub = client.subscribe('terminal.subscribe', { terminal: handle }, (result) => {
+          if (subscribeSeqRef.current !== seq || activeHandleRef.current !== handle) {
+            return
+          }
+          const data = result as Record<string, unknown>
+          if (data.type === 'scrollback') {
+            // Why: init xterm at the desktop's exact cols/rows so escape
+            // codes with absolute cursor positioning render correctly.
+            // CSS transform: scale() in TerminalWebView shrinks the canvas
+            // to fit the phone viewport, producing a 1:1 miniature.
+            const cols = (data.cols as number) || 80
+            const rows = (data.rows as number) || 24
+            terminalSizeRef.current = { cols, rows }
+            termRef.current?.init(cols, rows)
+            // Why: prefer serialized xterm buffer (ANSI escape string that
+            // reconstructs the exact screen state) over line-based tail
+            // because TUI apps use absolute cursor positioning that only
+            // works at the original terminal dimensions.
+            if (typeof data.serialized === 'string' && data.serialized.length > 0) {
+              termRef.current?.write(data.serialized)
+            } else {
+              writeLines(data.lines as string[] | string | undefined)
+            }
+          } else if (data.type === 'data') {
+            termRef.current?.write(data.chunk as string)
+          }
+        })
+
+        if (subscribeSeqRef.current === seq && activeHandleRef.current === handle) {
+          unsubRef.current = unsub
+        } else {
+          unsub()
+        }
+      })()
     },
     [client, writeLines]
   )

@@ -41,6 +41,9 @@ let streamSawMarker = false
 let readSawMarker = false
 let activeHandle: string | null = null
 let runtimeId = ''
+let scrollbackCols: number | null = null
+let scrollbackRows: number | null = null
+let serializedLength = 0
 
 function nextId(): string {
   reqId += 1
@@ -168,6 +171,9 @@ async function run(ws: WebSocket): Promise<void> {
   }
 
   console.log(`runtime: ${runtimeId || '(unknown)'}`)
+  console.log(`scrollbackCols: ${scrollbackCols ?? '(none)'}`)
+  console.log(`scrollbackRows: ${scrollbackRows ?? '(none)'}`)
+  console.log(`serializedLength: ${serializedLength}`)
   console.log(`streamSawMarker: ${streamSawMarker}`)
   console.log(`readSawMarker: ${readSawMarker}`)
 
@@ -207,7 +213,13 @@ ws.on('message', (data) => {
 
   if (response.streaming && result?.type === 'scrollback') {
     const lines = Array.isArray(result.lines) ? result.lines.join('\n') : String(result.lines ?? '')
+    scrollbackCols = typeof result.cols === 'number' ? result.cols : null
+    scrollbackRows = typeof result.rows === 'number' ? result.rows : null
+    serializedLength = typeof result.serialized === 'string' ? result.serialized.length : 0
     if (lines.includes(marker)) {
+      streamSawMarker = true
+    }
+    if (typeof result.serialized === 'string' && result.serialized.includes(marker)) {
       streamSawMarker = true
     }
   }
