@@ -14,7 +14,6 @@ import { errorResponse } from './rpc/errors'
 import type { RpcTransport } from './rpc/transport'
 import { UnixSocketTransport } from './rpc/unix-socket-transport'
 import { WebSocketTransport } from './rpc/ws-transport'
-import { loadOrCreateTlsCertificate } from './tls-certificate'
 import { DeviceRegistry } from './device-registry'
 
 const DEFAULT_WS_PORT = 6768
@@ -108,15 +107,15 @@ export class OrcaRuntimeRpcServer {
     // device registry, not the shared runtime auth token.
     if (this.enableWebSocket) {
       try {
-        const tls = loadOrCreateTlsCertificate(this.userDataPath)
-        this.tlsFingerprint = tls.fingerprint
         this.deviceRegistry = new DeviceRegistry(this.userDataPath)
 
+        // Why: React Native's built-in WebSocket cannot disable TLS verification
+        // for self-signed certificates. Use plain ws:// for now — per-device
+        // tokens still provide auth. TLS will be re-enabled once the mobile app
+        // implements certificate pinning via the fingerprint from QR pairing.
         const wsTransport = new WebSocketTransport({
           host: '0.0.0.0',
-          port: this.wsPort,
-          tlsCert: tls.cert,
-          tlsKey: tls.key
+          port: this.wsPort
         })
 
         // Why: WebSocket transport uses dispatchStreaming which can emit
@@ -130,7 +129,7 @@ export class OrcaRuntimeRpcServer {
         activeTransports.push(wsTransport)
         transportsMeta.push({
           kind: 'websocket',
-          endpoint: `wss://0.0.0.0:${this.wsPort}`
+          endpoint: `ws://0.0.0.0:${this.wsPort}`
         })
       } catch (error) {
         // Why: WebSocket transport is supplementary — the runtime must still

@@ -1,9 +1,10 @@
 // Why: the WebSocket transport enables mobile clients to connect to the Orca
-// runtime over the local network. It uses wss:// with a self-signed TLS
-// certificate to prevent passive sniffing, and per-device tokens (validated
-// by the message handler in OrcaRuntimeRpcServer) instead of the shared
-// runtime auth token.
+// runtime over the local network. When TLS cert/key are provided it uses wss://
+// to prevent passive sniffing; otherwise it falls back to plain ws://. Per-device
+// tokens (validated by the message handler in OrcaRuntimeRpcServer) provide auth
+// regardless of transport encryption.
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'https'
+import { createServer as createHttpServer, type Server as HttpServer } from 'http'
 import { WebSocketServer, type WebSocket } from 'ws'
 import type { RpcTransport } from './transport'
 
@@ -13,16 +14,16 @@ const MAX_WS_CONNECTIONS = 32
 export type WebSocketTransportOptions = {
   host: string
   port: number
-  tlsCert: string
-  tlsKey: string
+  tlsCert?: string
+  tlsKey?: string
 }
 
 export class WebSocketTransport implements RpcTransport {
   private readonly host: string
   private readonly port: number
-  private readonly tlsCert: string
-  private readonly tlsKey: string
-  private httpsServer: HttpsServer | null = null
+  private readonly tlsCert: string | undefined
+  private readonly tlsKey: string | undefined
+  private httpServer: HttpsServer | HttpServer | null = null
   private wss: WebSocketServer | null = null
   private messageHandler: ((msg: string, reply: (response: string) => void) => void) | null = null
 
@@ -42,13 +43,16 @@ export class WebSocketTransport implements RpcTransport {
       return
     }
 
-    const httpsServer = createHttpsServer({
-      cert: this.tlsCert,
-      key: this.tlsKey
-    })
+    // Why: React Native's built-in WebSocket cannot disable TLS verification
+    // for self-signed certificates. Until we implement certificate pinning on
+    // the mobile side, use plain ws:// which still has per-device token auth.
+    const httpServer =
+      this.tlsCert && this.tlsKey
+        ? createHttpsServer({ cert: this.tlsCert, key: this.tlsKey })
+        : createHttpServer()
 
     const wss = new WebSocketServer({
-      server: httpsServer,
+      server: httpServer,
       maxPayload: MAX_WS_MESSAGE_BYTES
     })
 
@@ -61,22 +65,22 @@ export class WebSocketTransport implements RpcTransport {
     })
 
     await new Promise<void>((resolve, reject) => {
-      httpsServer.once('error', reject)
-      httpsServer.listen(this.port, this.host, () => {
-        httpsServer.off('error', reject)
+      httpServer.once('error', reject)
+      httpServer.listen(this.port, this.host, () => {
+        httpServer.off('error', reject)
         resolve()
       })
     })
 
-    this.httpsServer = httpsServer
+    this.httpServer = httpServer
     this.wss = wss
   }
 
   async stop(): Promise<void> {
     const wss = this.wss
-    const httpsServer = this.httpsServer
+    const httpServer = this.httpServer
     this.wss = null
-    this.httpsServer = null
+    this.httpServer = null
 
     if (wss) {
       for (const client of wss.clients) {
@@ -85,9 +89,9 @@ export class WebSocketTransport implements RpcTransport {
       wss.close()
     }
 
-    if (httpsServer) {
+    if (httpServer) {
       await new Promise<void>((resolve, reject) => {
-        httpsServer.close((error) => {
+        httpServer.close((error) => {
           if (error) {
             reject(error)
             return
