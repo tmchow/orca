@@ -27,24 +27,26 @@ type TerminalMessage =
 // render correctly, then use a measured CSS transform: scale() to fit the
 // canvas into the phone viewport. The scale is computed after xterm opens
 // by measuring the rendered surface width, not hardcoded, so it adapts to
-// any terminal column count (80, 150, 200+). The WebView's native
-// pinch-to-zoom provides user-controlled zoom on top of the initial fit.
+// any terminal column count (80, 150, 200+). All touch gestures (scroll,
+// pinch-to-zoom, pan) are handled by custom JS rather than native WebView
+// behavior, so they work correctly with the CSS scale transform.
 const XTERM_HTML = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.1, maximum-scale=5, user-scalable=yes">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
     background: ${colors.terminalBg};
-    overflow: auto;
+    overflow: hidden;
     width: 100%;
     height: 100%;
   }
-  #scroll-container {
-    overflow: auto;
+  #terminal-container {
+    overflow: hidden;
+    position: relative;
     width: 100%;
     height: 100%;
   }
@@ -52,21 +54,25 @@ const XTERM_HTML = `<!DOCTYPE html>
     transform-origin: top left;
     display: inline-block;
   }
+  .xterm { -webkit-user-select: none; user-select: none; }
 </style>
 </head>
 <body>
-<div id="scroll-container">
+<div id="terminal-container">
   <div id="terminal-surface"></div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script>
 (function() {
   var surface = document.getElementById('terminal-surface');
-  var scrollContainer = document.getElementById('scroll-container');
   var term = null;
   var writeQueue = [];
   var ready = false;
   var currentScale = 1;
+  var userScale = 1;
+  var panX = 0;
+  var panY = 0;
+  var initRows = 24;
 
   function computeFitScale() {
     if (!term) return 1;
@@ -78,18 +84,80 @@ const XTERM_HTML = `<!DOCTYPE html>
     return Math.min(1, vpWidth / termWidth);
   }
 
+  function getTotalScale() { return currentScale * userScale; }
+
+  function updateTransform() {
+    surface.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + getTotalScale() + ')';
+  }
+
+  function getCellHeight() {
+    if (!term || !term._core) return 15;
+    var core = term._core;
+    if (core._renderService && core._renderService.dimensions) {
+      return core._renderService.dimensions.css.cell.height || 15;
+    }
+    return 15;
+  }
+
+  // Why: clamp pan so the terminal content always covers the viewport
+  // when zoomed in. When content is smaller than viewport in a
+  // dimension, pin to top-left (no floating in the middle).
+  function clampPan() {
+    if (!term || !term.element) return;
+    var ts = getTotalScale();
+    var cw = term.element.scrollWidth * ts;
+    var ch = term.element.scrollHeight * ts;
+    var vpW = window.innerWidth;
+    var vpH = window.innerHeight;
+    if (cw > vpW) {
+      panX = Math.min(0, Math.max(vpW - cw, panX));
+    } else {
+      panX = 0;
+    }
+    if (ch > vpH) {
+      panY = Math.min(0, Math.max(vpH - ch, panY));
+    } else {
+      panY = 0;
+    }
+  }
+
+  // Why: the desktop terminal may have fewer rows than needed to fill
+  // the phone's WebView at the current scale (e.g. 40 desktop rows
+  // scaled to 0.3x only covers ~40% of the viewport). Resize xterm's
+  // viewport to fill the available height so there's no blank gap
+  // below the last terminal line. This is display-only — the PTY is
+  // not resized — so the extra rows just show empty terminal background
+  // managed by xterm, not a separate HTML gap. Never shrink below the
+  // original init row count to avoid clipping active terminal content.
+  function adjustRowsForViewport() {
+    if (!term || !term.element) return;
+    var cellHeight = getCellHeight();
+    if (cellHeight > 0 && currentScale > 0) {
+      var vpHeight = window.innerHeight;
+      var neededRows = Math.floor(vpHeight / (cellHeight * currentScale));
+      if (neededRows >= initRows && neededRows !== term.rows) {
+        term.resize(term.cols, neededRows);
+      }
+    }
+  }
+
   function applyFitScale() {
     if (!term || !term.element) return;
     currentScale = computeFitScale();
-    surface.style.transform = 'scale(' + currentScale + ')';
-    var el = term.element;
-    scrollContainer.style.width = Math.ceil(el.scrollWidth * currentScale) + 'px';
-    scrollContainer.style.height = Math.ceil(el.scrollHeight * currentScale) + 'px';
+    // Why: when the scale is very close to 1 (e.g. 0.97 due to xterm
+    // scrollbar width), snap to 1.0 to avoid sub-pixel shrinkage.
+    if (currentScale >= 0.95) currentScale = 1;
+    userScale = 1;
+    panX = 0;
+    panY = 0;
+    updateTransform();
+    adjustRowsForViewport();
   }
 
   function init(cols, rows) {
     ready = false;
     writeQueue = [];
+    initRows = rows || 24;
     if (term) term.dispose();
 
     term = new Terminal({
@@ -130,6 +198,144 @@ const XTERM_HTML = `<!DOCTYPE html>
     });
     term.open(surface);
 
+    // Why: prevent taps from being interpreted as cursor positioning or
+    // mouse-report events by the TUI running in the terminal. On mobile
+    // the terminal is read-only — taps should do nothing, not jump the
+    // cursor.
+    surface.addEventListener('mousedown', function(e) { e.preventDefault(); e.stopPropagation(); }, true);
+    surface.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); }, true);
+
+    // Why: all touch gestures are handled here instead of relying on the
+    // WebView's native scroll/zoom. Native zoom operates on the HTML page
+    // boundaries, which breaks at the edges (can't zoom on bottom text).
+    // Our handler zooms the terminal surface CSS transform directly, so
+    // it works at any position. Single-finger at 1x = xterm scrollback
+    // with scale-compensated sensitivity + momentum. Single-finger when
+    // zoomed = pan. Two-finger = pinch-to-zoom centered on pinch point.
+    var ts = {
+      lastX: 0, lastY: 0, lastTime: 0, velY: 0,
+      accumDelta: 0, momentumId: null, isPinching: false,
+      pinchDist: 0, pinchScale: 0, pinchSurfX: 0, pinchSurfY: 0
+    };
+
+    function getDistance(a, b) {
+      var dx = a.clientX - b.clientX, dy = a.clientY - b.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    surface.addEventListener('touchstart', function(e) {
+      if (ts.momentumId) {
+        cancelAnimationFrame(ts.momentumId);
+        ts.momentumId = null;
+      }
+      if (e.touches.length === 2) {
+        ts.isPinching = true;
+        ts.pinchDist = getDistance(e.touches[0], e.touches[1]);
+        ts.pinchScale = userScale;
+        var mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        var total = getTotalScale();
+        ts.pinchSurfX = (mx - panX) / total;
+        ts.pinchSurfY = (my - panY) / total;
+      } else if (e.touches.length === 1) {
+        ts.isPinching = false;
+        ts.lastX = e.touches[0].clientX;
+        ts.lastY = e.touches[0].clientY;
+        ts.lastTime = Date.now();
+        ts.velY = 0;
+        ts.accumDelta = 0;
+      }
+    }, { capture: true, passive: true });
+
+    surface.addEventListener('touchmove', function(e) {
+      if (!term) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.touches.length === 2) {
+        ts.isPinching = true;
+        var dist = getDistance(e.touches[0], e.touches[1]);
+        var mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+        var ratio = dist / ts.pinchDist;
+        userScale = Math.max(1, Math.min(5, ts.pinchScale * ratio));
+
+        var total = getTotalScale();
+        panX = mx - ts.pinchSurfX * total;
+        panY = my - ts.pinchSurfY * total;
+        clampPan();
+        updateTransform();
+
+      } else if (e.touches.length === 1 && !ts.isPinching) {
+        var x = e.touches[0].clientX;
+        var y = e.touches[0].clientY;
+        var now = Date.now();
+        var dt = now - ts.lastTime;
+
+        if (userScale > 1.05) {
+          panX += x - ts.lastX;
+          panY += y - ts.lastY;
+          clampPan();
+          updateTransform();
+        } else {
+          var deltaY = ts.lastY - y;
+          if (dt > 0) ts.velY = deltaY / dt;
+          ts.lastTime = now;
+          var effectiveCellH = getCellHeight() * currentScale;
+          ts.accumDelta += deltaY;
+          var lines = Math.trunc(ts.accumDelta / effectiveCellH);
+          if (lines !== 0) {
+            ts.accumDelta -= lines * effectiveCellH;
+            term.scrollLines(lines);
+          }
+        }
+        ts.lastX = x;
+        ts.lastY = y;
+      }
+    }, { capture: true, passive: false });
+
+    surface.addEventListener('touchend', function(e) {
+      if (!term) return;
+
+      if (ts.isPinching && e.touches.length < 2) {
+        ts.isPinching = false;
+        if (userScale < 1.05) {
+          userScale = 1; panX = 0; panY = 0;
+          updateTransform();
+        }
+        if (e.touches.length === 1) {
+          ts.lastX = e.touches[0].clientX;
+          ts.lastY = e.touches[0].clientY;
+          ts.lastTime = Date.now();
+          ts.velY = 0;
+          ts.accumDelta = 0;
+        }
+        return;
+      }
+
+      if (e.touches.length === 0 && userScale <= 1.05) {
+        var vel = ts.velY;
+        var FRICTION = 0.95;
+        var MIN_VEL = 0.02;
+        function momentumStep() {
+          vel *= FRICTION;
+          if (Math.abs(vel) < MIN_VEL) { ts.momentumId = null; return; }
+          var effectiveCellH = getCellHeight() * currentScale;
+          ts.accumDelta += vel * 16;
+          var lines = Math.trunc(ts.accumDelta / effectiveCellH);
+          if (lines !== 0) {
+            ts.accumDelta -= lines * effectiveCellH;
+            term.scrollLines(lines);
+          }
+          ts.momentumId = requestAnimationFrame(momentumStep);
+        }
+        if (Math.abs(vel) > MIN_VEL) {
+          ts.momentumId = requestAnimationFrame(momentumStep);
+        }
+      }
+    }, { capture: true, passive: true });
+
     requestAnimationFrame(function() {
       ready = true;
       for (var i = 0; i < writeQueue.length; i++) {
@@ -137,7 +343,6 @@ const XTERM_HTML = `<!DOCTYPE html>
       }
       writeQueue = [];
       applyFitScale();
-      window.scrollTo(0, 0);
       notify({ type: 'ready', cols: cols, rows: rows });
     });
   }
@@ -194,7 +399,6 @@ const XTERM_HTML = `<!DOCTYPE html>
       measureFitDimensions();
     } else if (msg.type === 'reset-zoom') {
       applyFitScale();
-      window.scrollTo(0, 0);
     }
   }
 
@@ -211,7 +415,9 @@ const XTERM_HTML = `<!DOCTYPE html>
   });
 
   window.addEventListener('resize', function() {
-    applyFitScale();
+    adjustRowsForViewport();
+    clampPan();
+    updateTransform();
   });
 
   if (window.Terminal) {
@@ -327,8 +533,7 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(
         style={styles.webview}
         originWhitelist={['*']}
         javaScriptEnabled
-        scrollEnabled
-        nestedScrollEnabled
+        scrollEnabled={true}
         scalesPageToFit={false}
         onLoadStart={handleLoadStart}
         onMessage={handleMessage}
