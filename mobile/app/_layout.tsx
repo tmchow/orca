@@ -1,5 +1,7 @@
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
+import { colors } from '../src/theme/mobile-theme'
+import { OrcaLogo } from '../src/components/OrcaLogo'
 
 export default function RootLayout() {
   return (
@@ -7,11 +9,23 @@ export default function RootLayout() {
       <StatusBar style="light" />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: '#1a1a2e' },
-          headerTintColor: '#e0e0e0',
-          contentStyle: { backgroundColor: '#0d0d1a' }
+          headerStyle: { backgroundColor: colors.bgPanel },
+          headerTintColor: colors.textPrimary,
+          headerTitleStyle: { fontSize: 16, fontWeight: '600' },
+          contentStyle: { backgroundColor: colors.bgBase },
+          headerShadowVisible: false
         }}
-      />
+      >
+        <Stack.Screen
+          name="index"
+          options={{
+            headerShown: false,
+            headerTitle: () => <OrcaLogo size={22} />
+          }}
+        />
+        <Stack.Screen name="pair-scan" options={{ title: 'Pair Host' }} />
+        <Stack.Screen name="h" options={{ headerShown: false }} />
+      </Stack>
     </>
   )
 }

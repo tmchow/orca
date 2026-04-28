@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Orca Mobile",
+    "name": "Orca",
     "slug": "orca-mobile",
     "version": "0.0.1",
     "orientation": "portrait",
@@ -15,7 +15,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#1a1a2e"
+        "backgroundColor": "#111111"
       },
       "package": "com.stably.orca.mobile"
     },

@@ -4,8 +4,9 @@ import { CameraView, useCameraPermissions } from 'expo-camera'
 import { useRouter } from 'expo-router'
 import { decodePairingUrl } from '../src/transport/pairing'
 import { connect } from '../src/transport/rpc-client'
-import { saveHost } from '../src/transport/host-store'
-import type { PairingOffer, RpcSuccess } from '../src/transport/types'
+import { saveHost, getNextHostName } from '../src/transport/host-store'
+import type { PairingOffer } from '../src/transport/types'
+import { colors, spacing, radii, typography } from '../src/theme/mobile-theme'
 
 export default function PairScanScreen() {
   const router = useRouter()
@@ -54,12 +55,12 @@ export default function PairScanScreen() {
         return
       }
 
-      const runtimeId = (response as RpcSuccess)._meta.runtimeId
       const hostId = `host-${Date.now()}`
+      const hostName = await getNextHostName()
 
       await saveHost({
         id: hostId,
-        name: runtimeId,
+        name: hostName,
         endpoint: offer.endpoint,
         deviceToken: offer.deviceToken,
         certFingerprint: offer.certFingerprint,
@@ -83,7 +84,7 @@ export default function PairScanScreen() {
   if (!permission) {
     return (
       <View style={styles.container}>
-        <ActivityIndicator color="#3b82f6" />
+        <ActivityIndicator color={colors.textSecondary} />
       </View>
     )
   }
@@ -91,21 +92,22 @@ export default function PairScanScreen() {
   if (!permission.granted) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>Camera Permission</Text>
-        <Text style={styles.subtitle}>
-          Orca needs camera access to scan the pairing QR code from your desktop.
-        </Text>
-        <Pressable style={styles.button} onPress={requestPermission}>
-          <Text style={styles.buttonText}>Grant Camera Access</Text>
-        </Pressable>
+        <View style={styles.centered}>
+          <Text style={styles.title}>Camera Permission</Text>
+          <Text style={styles.subtitle}>
+            Orca needs camera access to scan the pairing QR code from your desktop.
+          </Text>
+          <Pressable style={styles.primaryButton} onPress={requestPermission}>
+            <Text style={styles.primaryButtonText}>Grant Camera Access</Text>
+          </Pressable>
+        </View>
       </View>
     )
   }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Scan QR Code</Text>
-      <Text style={styles.subtitle}>
+      <Text style={styles.instruction}>
         Open Orca on your computer, go to Settings → Mobile, and scan the QR code shown there.
       </Text>
 
@@ -120,16 +122,16 @@ export default function PairScanScreen() {
 
       {status === 'connecting' && (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#3b82f6" />
-          <Text style={styles.connectingText}>Connecting...</Text>
+          <ActivityIndicator size="large" color={colors.textSecondary} />
+          <Text style={styles.connectingText}>Connecting…</Text>
         </View>
       )}
 
       {status === 'error' && (
         <View style={styles.centered}>
           <Text style={styles.errorText}>{errorMessage}</Text>
-          <Pressable style={styles.button} onPress={retry}>
-            <Text style={styles.buttonText}>Try Again</Text>
+          <Pressable style={styles.primaryButton} onPress={retry}>
+            <Text style={styles.primaryButtonText}>Try Again</Text>
           </Pressable>
         </View>
       )}
@@ -140,24 +142,18 @@ export default function PairScanScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0d0d1a',
-    padding: 24
+    backgroundColor: colors.bgBase,
+    padding: spacing.lg
   },
-  title: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#e0e0e0',
-    marginBottom: 8
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#888',
-    marginBottom: 24,
-    lineHeight: 20
+  instruction: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginBottom: spacing.lg,
+    lineHeight: 18
   },
   camera: {
     flex: 1,
-    borderRadius: 12,
+    borderRadius: radii.camera,
     overflow: 'hidden'
   },
   centered: {
@@ -165,27 +161,40 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center'
   },
+  title: {
+    fontSize: typography.titleSize,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    marginBottom: spacing.sm
+  },
+  subtitle: {
+    fontSize: typography.bodySize,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: spacing.xl,
+    lineHeight: 20
+  },
   connectingText: {
-    color: '#e0e0e0',
-    fontSize: 16,
-    marginTop: 16
+    color: colors.textSecondary,
+    fontSize: typography.bodySize,
+    marginTop: spacing.lg
   },
   errorText: {
-    color: '#ef4444',
-    fontSize: 16,
+    color: colors.statusRed,
+    fontSize: typography.bodySize,
     textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 22
+    marginBottom: spacing.xl,
+    lineHeight: 20
   },
-  button: {
-    backgroundColor: '#3b82f6',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8
+  primaryButton: {
+    backgroundColor: colors.accentBlue,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: radii.button
   },
-  buttonText: {
+  primaryButtonText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: typography.bodySize,
     fontWeight: '600'
   }
 })

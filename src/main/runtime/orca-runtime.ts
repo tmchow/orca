@@ -32,6 +32,7 @@ import type {
   RuntimeTerminalWait,
   RuntimeTerminalWaitCondition,
   RuntimeWorktreePsSummary,
+  RuntimeWorktreeStatus,
   RuntimeTerminalShow,
   RuntimeTerminalSummary,
   RuntimeSyncedLeaf,
@@ -115,6 +116,8 @@ type RuntimeStore = {
   getWorktreeMeta: Store['getWorktreeMeta']
   setWorktreeMeta: Store['setWorktreeMeta']
   removeWorktreeMeta: Store['removeWorktreeMeta']
+  getGitHubCache: Store['getGitHubCache']
+  getWorkspaceSession?: Store['getWorkspaceSession']
   getSettings(): {
     workspaceDir: string
     nestWorkspaces: boolean
@@ -138,10 +141,23 @@ type RuntimeLeafRecord = RuntimeSyncedLeaf & {
   lastAgentStatus: AgentStatus | null
 }
 
+type RuntimePtyWorktreeRecord = {
+  ptyId: string
+  worktreeId: string
+  connected: boolean
+  lastOutputAt: number | null
+  tailBuffer: string[]
+  tailPartialLine: string
+  tailTruncated: boolean
+  tailLinesTotal: number
+  preview: string
+}
+
 type RuntimePtyController = {
   write(ptyId: string, data: string): boolean
   kill(ptyId: string): boolean
   getForegroundProcess(ptyId: string): Promise<string | null>
+  listProcesses?(): Promise<{ id: string; cwd: string; title: string }[]>
   serializeBuffer?(ptyId: string): Promise<{ data: string; cols: number; rows: number } | null>
   getSize?(ptyId: string): { cols: number; rows: number } | null
 }
@@ -247,6 +263,7 @@ export class OrcaRuntimeService {
   // without polling. Keyed by ptyId for O(1) lookup per data event.
   private dataListeners = new Map<string, Set<(data: string) => void>>()
   private subscriptionCleanups = new Map<string, () => void>()
+  private ptysById = new Map<string, RuntimePtyWorktreeRecord>()
 
   constructor(store: RuntimeStore | null = null, stats?: StatsCollector) {
     this.store = store
@@ -357,6 +374,14 @@ export class OrcaRuntimeService {
         lastAgentStatus: existing?.ptyId === ptyId ? existing.lastAgentStatus : null
       })
 
+      if (leaf.ptyId) {
+        this.recordPtyWorktree(leaf.ptyId, leaf.worktreeId, {
+          connected: true,
+          lastOutputAt: existing?.ptyId === leaf.ptyId ? existing.lastOutputAt : null,
+          preview: existing?.ptyId === leaf.ptyId ? existing.preview : ''
+        })
+      }
+
       if (existing && (existing.ptyId !== ptyId || existing.ptyGeneration !== ptyGeneration)) {
         this.invalidateLeafHandle(leafKey)
       }
@@ -435,6 +460,10 @@ export class OrcaRuntimeService {
   }
 
   onPtySpawned(ptyId: string): void {
+    const pty = this.getOrCreatePtyWorktreeRecord(ptyId)
+    if (pty) {
+      pty.connected = true
+    }
     for (const leaf of this.leaves.values()) {
       if (leaf.ptyId === ptyId) {
         leaf.connected = true
@@ -442,6 +471,10 @@ export class OrcaRuntimeService {
         this.adoptPreAllocatedHandle(leaf)
       }
     }
+  }
+
+  registerPty(ptyId: string, worktreeId: string): void {
+    this.recordPtyWorktree(ptyId, worktreeId, { connected: true })
   }
 
   onPtyData(ptyId: string, data: string, at: number): void {
@@ -456,10 +489,27 @@ export class OrcaRuntimeService {
     const oscTitle = extractLastOscTitle(data)
     const agentStatus = oscTitle ? detectAgentStatusFromTitle(oscTitle) : null
 
+    const pty = this.getOrCreatePtyWorktreeRecord(ptyId)
+    if (pty) {
+      pty.connected = true
+      pty.lastOutputAt = at
+      const nextTail = appendToTailBuffer(pty.tailBuffer, pty.tailPartialLine, data)
+      pty.tailBuffer = nextTail.lines
+      pty.tailPartialLine = nextTail.partialLine
+      pty.tailTruncated = pty.tailTruncated || nextTail.truncated
+      pty.tailLinesTotal += nextTail.newCompleteLines
+      pty.preview = buildPreview(pty.tailBuffer, pty.tailPartialLine)
+    }
+
     for (const leaf of this.leaves.values()) {
       if (leaf.ptyId !== ptyId) {
         continue
       }
+      this.recordPtyWorktree(ptyId, leaf.worktreeId, {
+        connected: true,
+        lastOutputAt: pty?.lastOutputAt ?? at,
+        preview: pty?.preview ?? leaf.preview
+      })
       leaf.connected = true
       leaf.writable = this.graphStatus === 'ready'
       leaf.lastOutputAt = at
@@ -524,6 +574,9 @@ export class OrcaRuntimeService {
     if (!record) {
       return null
     }
+    if (record.tabId.startsWith('pty:')) {
+      return { ptyId: record.ptyId }
+    }
     const leaf = this.leaves.get(this.getLeafKey(record.tabId, record.leafId))
     if (!leaf) {
       return null
@@ -545,6 +598,10 @@ export class OrcaRuntimeService {
 
   onPtyExit(ptyId: string, exitCode: number): void {
     this.agentDetector?.onExit(ptyId)
+    const pty = this.ptysById.get(ptyId)
+    if (pty) {
+      pty.connected = false
+    }
 
     for (const leaf of this.leaves.values()) {
       if (leaf.ptyId !== ptyId) {
@@ -616,12 +673,32 @@ export class OrcaRuntimeService {
     this.assertStableReadyGraph(graphEpoch)
 
     const terminals: RuntimeTerminalSummary[] = []
+    const ptyIdsFromLeaves = new Set<string>()
     for (const leaf of this.leaves.values()) {
       if (targetWorktreeId && leaf.worktreeId !== targetWorktreeId) {
         continue
       }
+      if (leaf.ptyId) {
+        ptyIdsFromLeaves.add(leaf.ptyId)
+      }
       terminals.push(this.buildTerminalSummary(leaf, worktreesById))
     }
+
+    const resolvedWorktrees = [...worktreesById.values()]
+    await this.refreshPtyWorktreeRecordsFromController(resolvedWorktrees)
+    // Why: worktree.ps can classify active worktrees from PTY records even when
+    // the renderer graph is missing a leaf. terminal.list needs the same fallback
+    // so mobile does not show a false "No terminals" create flow.
+    for (const pty of this.ptysById.values()) {
+      if (!pty.connected || ptyIdsFromLeaves.has(pty.ptyId)) {
+        continue
+      }
+      if (targetWorktreeId && pty.worktreeId !== targetWorktreeId) {
+        continue
+      }
+      terminals.push(this.buildPtyTerminalSummary(pty, worktreesById))
+    }
+
     return {
       terminals: terminals.slice(0, limit),
       totalCount: terminals.length,
@@ -668,6 +745,15 @@ export class OrcaRuntimeService {
     const graphEpoch = this.captureReadyGraphEpoch()
     const worktreesById = await this.getResolvedWorktreeMap()
     this.assertStableReadyGraph(graphEpoch)
+    const pty = this.getLivePtyForHandle(handle)
+    if (pty) {
+      return {
+        ...this.buildPtyTerminalSummary(pty.pty, worktreesById),
+        paneRuntimeId: -1,
+        ptyId: pty.pty.ptyId,
+        rendererGraphEpoch: this.rendererGraphEpoch
+      }
+    }
     const { leaf } = this.getLiveLeafForHandle(handle)
     const summary = this.buildTerminalSummary(leaf, worktreesById)
     return {
@@ -679,6 +765,11 @@ export class OrcaRuntimeService {
   }
 
   async readTerminal(handle: string, opts: { cursor?: number } = {}): Promise<RuntimeTerminalRead> {
+    const pty = this.getLivePtyForHandle(handle)
+    if (pty) {
+      return this.readPtyTerminal(handle, pty.pty, opts)
+    }
+
     const { leaf } = this.getLiveLeafForHandle(handle)
     const allLines = buildTailLines(leaf.tailBuffer, leaf.tailPartialLine)
 
@@ -726,6 +817,26 @@ export class OrcaRuntimeService {
       interrupt?: boolean
     }
   ): Promise<RuntimeTerminalSend> {
+    const pty = this.getLivePtyForHandle(handle)
+    if (pty) {
+      if (!pty.pty.connected) {
+        throw new Error('terminal_not_writable')
+      }
+      const payload = buildSendPayload(action)
+      if (payload === null) {
+        throw new Error('invalid_terminal_send')
+      }
+      const wrote = this.ptyController?.write(pty.pty.ptyId, payload) ?? false
+      if (!wrote) {
+        throw new Error('terminal_not_writable')
+      }
+      return {
+        handle,
+        accepted: true,
+        bytesWritten: Buffer.byteLength(payload, 'utf8')
+      }
+    }
+
     const { leaf } = this.getLiveLeafForHandle(handle)
     if (!leaf.writable || !leaf.ptyId) {
       throw new Error('terminal_not_writable')
@@ -865,41 +976,123 @@ export class OrcaRuntimeService {
       throw new Error('invalid_limit')
     }
     const resolvedWorktrees = await this.listResolvedWorktrees()
+    await this.refreshPtyWorktreeRecordsFromController(resolvedWorktrees)
     const repoById = new Map((this.store?.getRepos() ?? []).map((repo) => [repo.id, repo]))
     const summaries = new Map<string, RuntimeWorktreePsSummary>()
 
+    // Why: the GitHub cache is keyed by `repoPath::branch` (no refs/heads/ prefix),
+    // matching how the renderer's fetchPRForBranch stores entries. We look up cached
+    // PR info so mobile clients can group worktrees by PR state without making
+    // expensive `gh` CLI calls. Falls back to meta.linkedPR if no cache entry exists.
+    const ghCache = this.store?.getGitHubCache?.()
     for (const worktree of resolvedWorktrees) {
       const meta =
         this.store?.getWorktreeMeta?.(worktree.id) ?? this.store?.getAllWorktreeMeta()[worktree.id]
+      const repo = repoById.get(worktree.repoId)
+      let linkedPR: { number: number; state: string } | null = null
+      const branch = worktree.branch.replace(/^refs\/heads\//, '')
+      if (repo?.path && branch && ghCache) {
+        const prCacheKey = `${repo.path}::${branch}`
+        const cached = ghCache.pr[prCacheKey]
+        if (cached?.data) {
+          linkedPR = { number: cached.data.number, state: cached.data.state }
+        }
+      }
+      if (!linkedPR && meta?.linkedPR != null) {
+        linkedPR = { number: meta.linkedPR, state: 'unknown' }
+      }
       summaries.set(worktree.id, {
         worktreeId: worktree.id,
         repoId: worktree.repoId,
-        repo: repoById.get(worktree.repoId)?.displayName ?? worktree.repoId,
+        repo: repo?.displayName ?? worktree.repoId,
         path: worktree.path,
         branch: worktree.branch,
+        displayName: worktree.displayName,
         linkedIssue: worktree.linkedIssue,
+        linkedPR,
+        isPinned: meta?.isPinned ?? false,
         unread: meta?.isUnread ?? false,
         liveTerminalCount: 0,
         hasAttachedPty: false,
         lastOutputAt: null,
-        preview: ''
+        preview: '',
+        status: 'inactive'
       })
     }
 
+    const countedPtyIds = new Set<string>()
     for (const leaf of this.leaves.values()) {
-      const summary = summaries.get(leaf.worktreeId)
+      const summary = this.getSummaryForRuntimeWorktreeId(
+        summaries,
+        resolvedWorktrees,
+        leaf.worktreeId
+      )
       if (!summary) {
         continue
+      }
+      if (leaf.ptyId) {
+        countedPtyIds.add(leaf.ptyId)
       }
       const previousLastOutputAt = summary.lastOutputAt
       summary.liveTerminalCount += 1
       summary.hasAttachedPty = summary.hasAttachedPty || leaf.connected
       summary.lastOutputAt = maxTimestamp(summary.lastOutputAt, leaf.lastOutputAt)
+      summary.status = mergeWorktreeStatus(
+        summary.status,
+        getLeafWorktreeStatus(leaf, this.tabs.get(leaf.tabId)?.title ?? null)
+      )
       if (
         leaf.preview &&
         (summary.preview.length === 0 || (leaf.lastOutputAt ?? -1) >= (previousLastOutputAt ?? -1))
       ) {
         summary.preview = leaf.preview
+      }
+    }
+
+    for (const pty of this.ptysById.values()) {
+      if (!pty.connected || countedPtyIds.has(pty.ptyId)) {
+        continue
+      }
+      const summary = this.getSummaryForRuntimeWorktreeId(
+        summaries,
+        resolvedWorktrees,
+        pty.worktreeId
+      )
+      if (!summary) {
+        continue
+      }
+      const previousLastOutputAt = summary.lastOutputAt
+      summary.liveTerminalCount += 1
+      summary.hasAttachedPty = true
+      summary.lastOutputAt = maxTimestamp(summary.lastOutputAt, pty.lastOutputAt)
+      summary.status = mergeWorktreeStatus(summary.status, 'active')
+      if (
+        pty.preview &&
+        (summary.preview.length === 0 || (pty.lastOutputAt ?? -1) >= (previousLastOutputAt ?? -1))
+      ) {
+        summary.preview = pty.preview
+      }
+    }
+
+    const session = this.store?.getWorkspaceSession?.()
+    for (const [worktreeId, tabs] of Object.entries(session?.tabsByWorktree ?? {})) {
+      if (tabs.length === 0) {
+        continue
+      }
+      const summary = this.getSummaryForRuntimeWorktreeId(summaries, resolvedWorktrees, worktreeId)
+      if (!summary) {
+        continue
+      }
+      // Why: desktop can show terminal tabs that are not mounted as renderer
+      // leaves and are not currently visible in the PTY provider list. Mobile
+      // still needs those worktrees to show as terminal-bearing entries.
+      summary.liveTerminalCount = Math.max(summary.liveTerminalCount, tabs.length)
+      summary.hasAttachedPty = summary.hasAttachedPty || tabs.some((tab) => tab.ptyId !== null)
+      for (const tab of tabs) {
+        summary.status = mergeWorktreeStatus(
+          summary.status,
+          getSavedTabWorktreeStatus(tab.title, tab.ptyId !== null)
+        )
       }
     }
 
@@ -1004,6 +1197,24 @@ export class OrcaRuntimeService {
 
   async showManagedWorktree(worktreeSelector: string) {
     return await this.resolveWorktreeSelector(worktreeSelector)
+  }
+
+  async activateManagedWorktree(worktreeSelector: string): Promise<{
+    repoId: string
+    worktreeId: string
+    activated: boolean
+  }> {
+    this.assertGraphReady()
+    const worktree = await this.resolveWorktreeSelector(worktreeSelector)
+    const repo = this.store?.getRepo(worktree.repoId)
+    if (!repo) {
+      throw new Error('repo_not_found')
+    }
+
+    // Why: inactive worktree terminal panes are renderer-owned and may not have
+    // live PTYs until the desktop activates the worktree and mounts them.
+    this.notifier?.activateWorktree(repo.id, worktree.id)
+    return { repoId: repo.id, worktreeId: worktree.id, activated: true }
   }
 
   async createManagedWorktree(args: {
@@ -1349,6 +1560,10 @@ export class OrcaRuntimeService {
 
   async focusTerminal(handle: string): Promise<RuntimeTerminalFocus> {
     this.assertGraphReady()
+    const pty = this.getLivePtyForHandle(handle)
+    if (pty) {
+      return { handle, tabId: pty.record.tabId, worktreeId: pty.pty.worktreeId }
+    }
     const { leaf } = this.getLiveLeafForHandle(handle)
     this.notifier?.focusTerminal(leaf.tabId, leaf.worktreeId)
     return { handle, tabId: leaf.tabId, worktreeId: leaf.worktreeId }
@@ -1482,6 +1697,7 @@ export class OrcaRuntimeService {
     this.rememberDetachedPreAllocatedLeaves()
     this.handles.clear()
     this.handleByLeafKey.clear()
+    this.handleByPtyId.clear()
     this.rejectAllWaiters('terminal_handle_stale')
     this.refreshWritableFlags()
   }
@@ -1510,6 +1726,7 @@ export class OrcaRuntimeService {
     this.leaves.clear()
     this.handles.clear()
     this.handleByLeafKey.clear()
+    this.handleByPtyId.clear()
     this.rejectAllWaiters('terminal_handle_stale')
   }
 
@@ -1648,6 +1865,108 @@ export class OrcaRuntimeService {
 
   private invalidateResolvedWorktreeCache(): void {
     this.resolvedWorktreeCache = null
+  }
+
+  private recordPtyWorktree(
+    ptyId: string,
+    worktreeId: string,
+    state: Partial<Pick<RuntimePtyWorktreeRecord, 'connected' | 'lastOutputAt' | 'preview'>> = {}
+  ): RuntimePtyWorktreeRecord {
+    let pty = this.ptysById.get(ptyId)
+    if (!pty) {
+      pty = {
+        ptyId,
+        worktreeId,
+        connected: state.connected ?? true,
+        lastOutputAt: state.lastOutputAt ?? null,
+        tailBuffer: [],
+        tailPartialLine: '',
+        tailTruncated: false,
+        tailLinesTotal: 0,
+        preview: state.preview ?? ''
+      }
+      this.ptysById.set(ptyId, pty)
+      return pty
+    }
+
+    pty.worktreeId = worktreeId
+    if (state.connected !== undefined) {
+      pty.connected = state.connected
+    }
+    if (state.lastOutputAt !== undefined) {
+      pty.lastOutputAt = maxTimestamp(pty.lastOutputAt, state.lastOutputAt)
+    }
+    if (state.preview !== undefined && state.preview.length > 0) {
+      pty.preview = state.preview
+    }
+    return pty
+  }
+
+  private getOrCreatePtyWorktreeRecord(ptyId: string): RuntimePtyWorktreeRecord | null {
+    const existing = this.ptysById.get(ptyId)
+    if (existing) {
+      return existing
+    }
+    const inferredWorktreeId = inferWorktreeIdFromPtyId(ptyId)
+    if (!inferredWorktreeId) {
+      return null
+    }
+    // Why: daemon-backed PTY session IDs are prefixed with the worktree ID so
+    // mobile summaries survive renderer graph gaps and Electron reloads.
+    return this.recordPtyWorktree(ptyId, inferredWorktreeId)
+  }
+
+  private async refreshPtyWorktreeRecordsFromController(
+    resolvedWorktrees: ResolvedWorktree[]
+  ): Promise<void> {
+    if (!this.ptyController?.listProcesses) {
+      return
+    }
+    const sessions = await this.ptyController.listProcesses().catch(() => [])
+    const livePtyIds = new Set(sessions.map((session) => session.id))
+    for (const session of sessions) {
+      const worktreeId =
+        inferWorktreeIdFromPtyId(session.id) ??
+        findResolvedWorktreeIdForPath(resolvedWorktrees, session.cwd)
+      if (worktreeId) {
+        this.recordPtyWorktree(session.id, worktreeId, { connected: true })
+      }
+    }
+    for (const pty of this.ptysById.values()) {
+      if (!livePtyIds.has(pty.ptyId) && !this.leafExistsForPty(pty.ptyId)) {
+        pty.connected = false
+      }
+    }
+  }
+
+  private leafExistsForPty(ptyId: string): boolean {
+    for (const leaf of this.leaves.values()) {
+      if (leaf.ptyId === ptyId) {
+        return true
+      }
+    }
+    return false
+  }
+
+  private getSummaryForRuntimeWorktreeId(
+    summaries: Map<string, RuntimeWorktreePsSummary>,
+    resolvedWorktrees: ResolvedWorktree[],
+    runtimeWorktreeId: string
+  ): RuntimeWorktreePsSummary | null {
+    const exact = summaries.get(runtimeWorktreeId)
+    if (exact) {
+      return exact
+    }
+    const parsed = parseRuntimeWorktreeId(runtimeWorktreeId)
+    if (!parsed) {
+      return null
+    }
+    const resolved = resolvedWorktrees.find(
+      (worktree) =>
+        worktree.repoId === parsed.repoId &&
+        areWorktreePathsEqual(worktree.path, parsed.worktreePath)
+    )
+    return resolved ? (summaries.get(resolved.id) ?? null) : null
   }
 
   private buildTerminalSummary(
@@ -1789,6 +2108,27 @@ export class OrcaRuntimeService {
     }
   }
 
+  private buildPtyTerminalSummary(
+    pty: RuntimePtyWorktreeRecord,
+    worktreesById: Map<string, ResolvedWorktree>
+  ): RuntimeTerminalSummary {
+    const worktree = worktreesById.get(pty.worktreeId)
+
+    return {
+      handle: this.issuePtyHandle(pty),
+      worktreeId: pty.worktreeId,
+      worktreePath: worktree?.path ?? '',
+      branch: worktree?.branch ?? '',
+      tabId: `pty:${pty.ptyId}`,
+      leafId: `pty:${pty.ptyId}`,
+      title: null,
+      connected: pty.connected,
+      writable: pty.connected,
+      lastOutputAt: pty.lastOutputAt,
+      preview: pty.preview
+    }
+  }
+
   private getLiveLeafForHandle(handle: string): {
     record: TerminalHandleRecord
     leaf: RuntimeLeafRecord
@@ -1807,6 +2147,53 @@ export class OrcaRuntimeService {
       throw new Error('terminal_handle_stale')
     }
     return { record, leaf }
+  }
+
+  private getLivePtyForHandle(handle: string): {
+    record: TerminalHandleRecord
+    pty: RuntimePtyWorktreeRecord
+  } | null {
+    const record = this.handles.get(handle)
+    if (!record || record.runtimeId !== this.runtimeId || !record.tabId.startsWith('pty:')) {
+      return null
+    }
+    if (!record.ptyId) {
+      return null
+    }
+    const pty = this.ptysById.get(record.ptyId)
+    if (!pty || pty.ptyId !== record.ptyId) {
+      return null
+    }
+    return { record, pty }
+  }
+
+  private readPtyTerminal(
+    handle: string,
+    pty: RuntimePtyWorktreeRecord,
+    opts: { cursor?: number } = {}
+  ): RuntimeTerminalRead {
+    const allLines = buildTailLines(pty.tailBuffer, pty.tailPartialLine)
+
+    let tail: string[]
+    let truncated: boolean
+
+    if (typeof opts.cursor === 'number' && opts.cursor >= 0) {
+      const bufferStart = pty.tailLinesTotal - pty.tailBuffer.length
+      const sliceFrom = Math.max(0, opts.cursor - bufferStart)
+      tail = pty.tailBuffer.slice(sliceFrom)
+      truncated = opts.cursor < bufferStart
+    } else {
+      tail = allLines
+      truncated = pty.tailTruncated
+    }
+
+    return {
+      handle,
+      status: pty.connected ? 'running' : 'unknown',
+      tail,
+      truncated,
+      nextCursor: String(pty.tailLinesTotal)
+    }
   }
 
   private issueHandle(leaf: RuntimeLeafRecord): string {
@@ -1863,6 +2250,35 @@ export class OrcaRuntimeService {
     })
     this.handleByLeafKey.set(leafKey, preAllocated)
     return preAllocated
+  }
+
+  private issuePtyHandle(pty: RuntimePtyWorktreeRecord): string {
+    const existingHandle = this.handleByPtyId.get(pty.ptyId)
+    if (existingHandle) {
+      const existingRecord = this.handles.get(existingHandle)
+      if (
+        existingRecord &&
+        existingRecord.runtimeId === this.runtimeId &&
+        existingRecord.ptyId === pty.ptyId
+      ) {
+        return existingHandle
+      }
+    }
+
+    const handle = `term_${randomUUID()}`
+    const syntheticId = `pty:${pty.ptyId}`
+    this.handles.set(handle, {
+      handle,
+      runtimeId: this.runtimeId,
+      rendererGraphEpoch: this.rendererGraphEpoch,
+      worktreeId: pty.worktreeId,
+      tabId: syntheticId,
+      leafId: syntheticId,
+      ptyId: pty.ptyId,
+      ptyGeneration: 0
+    })
+    this.handleByPtyId.set(pty.ptyId, handle)
+    return handle
   }
 
   private refreshWritableFlags(): void {
@@ -3139,6 +3555,13 @@ const MAX_TAIL_LINES = 120
 const MAX_TAIL_CHARS = 4000
 const MAX_PREVIEW_LINES = 6
 const MAX_PREVIEW_CHARS = 300
+const WORKTREE_STATUS_PRIORITY: Record<RuntimeWorktreeStatus, number> = {
+  inactive: 0,
+  active: 1,
+  done: 2,
+  working: 3,
+  permission: 4
+}
 const DEFAULT_REPO_SEARCH_REFS_LIMIT = 25
 const DEFAULT_TERMINAL_LIST_LIMIT = 200
 const DEFAULT_WORKTREE_LIST_LIMIT = 200
@@ -3265,6 +3688,89 @@ function branchSelectorMatches(branch: string, selector: string): boolean {
 
 function normalizeBranchRef(branch: string): string {
   return branch.startsWith('refs/heads/') ? branch.slice('refs/heads/'.length) : branch
+}
+
+function inferWorktreeIdFromPtyId(ptyId: string): string | null {
+  const separatorIndex = ptyId.lastIndexOf('@@')
+  if (separatorIndex <= 0) {
+    return null
+  }
+  const worktreeId = ptyId.slice(0, separatorIndex)
+  return parseRuntimeWorktreeId(worktreeId) ? worktreeId : null
+}
+
+function parseRuntimeWorktreeId(
+  worktreeId: string
+): { repoId: string; worktreePath: string } | null {
+  const separatorIndex = worktreeId.indexOf('::')
+  if (separatorIndex <= 0) {
+    return null
+  }
+  const worktreePath = worktreeId.slice(separatorIndex + 2)
+  if (!worktreePath) {
+    return null
+  }
+  return {
+    repoId: worktreeId.slice(0, separatorIndex),
+    worktreePath
+  }
+}
+
+function findResolvedWorktreeIdForPath(
+  resolvedWorktrees: ResolvedWorktree[],
+  cwd: string
+): string | null {
+  if (!cwd) {
+    return null
+  }
+  const matches = resolvedWorktrees
+    .filter(
+      (worktree) =>
+        areWorktreePathsEqual(worktree.path, cwd) || isPathInsideWorktree(cwd, worktree.path)
+    )
+    .sort((left, right) => right.path.length - left.path.length)
+  return matches[0]?.id ?? null
+}
+
+function isPathInsideWorktree(candidatePath: string, worktreePath: string): boolean {
+  if (candidatePath === worktreePath) {
+    return true
+  }
+  const normalizedCandidate = candidatePath.replace(/\\/g, '/').replace(/\/+$/, '')
+  const normalizedWorktree = worktreePath.replace(/\\/g, '/').replace(/\/+$/, '')
+  return normalizedCandidate.startsWith(`${normalizedWorktree}/`)
+}
+
+function getLeafWorktreeStatus(
+  leaf: RuntimeLeafRecord,
+  tabTitle: string | null
+): RuntimeWorktreeStatus {
+  const detected = leaf.lastAgentStatus ?? detectAgentStatusFromTitle(leaf.title ?? tabTitle ?? '')
+  if (detected === 'permission') {
+    return 'permission'
+  }
+  if (detected === 'working') {
+    return 'working'
+  }
+  return leaf.ptyId ? 'active' : 'inactive'
+}
+
+function getSavedTabWorktreeStatus(title: string, hasPty: boolean): RuntimeWorktreeStatus {
+  const detected = detectAgentStatusFromTitle(title)
+  if (detected === 'permission') {
+    return 'permission'
+  }
+  if (detected === 'working') {
+    return 'working'
+  }
+  return hasPty ? 'active' : 'inactive'
+}
+
+function mergeWorktreeStatus(
+  current: RuntimeWorktreeStatus,
+  next: RuntimeWorktreeStatus
+): RuntimeWorktreeStatus {
+  return WORKTREE_STATUS_PRIORITY[next] > WORKTREE_STATUS_PRIORITY[current] ? next : current
 }
 
 function normalizeTerminalChunk(chunk: string): string {

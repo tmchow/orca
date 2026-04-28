@@ -50,6 +50,7 @@ export type RuntimeSyncedLeaf = {
   paneRuntimeId: number
   ptyId: string | null
   paneTitle?: string | null
+  title?: string | null
 }
 
 export type RuntimeSyncWindowGraph = {
@@ -145,13 +146,19 @@ export type RuntimeWorktreePsSummary = {
   repo: string
   path: string
   branch: string
+  displayName: string
   linkedIssue: number | null
+  linkedPR: { number: number; state: string } | null
+  isPinned: boolean
   unread: boolean
   liveTerminalCount: number
   hasAttachedPty: boolean
   lastOutputAt: number | null
   preview: string
+  status: RuntimeWorktreeStatus
 }
+
+export type RuntimeWorktreeStatus = 'active' | 'working' | 'permission' | 'done' | 'inactive'
 
 export type RuntimeWorktreeRecord = {
   id: string

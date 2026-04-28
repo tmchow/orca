@@ -1,5 +1,12 @@
 export { connect, type RpcClient } from './rpc-client'
-export { loadHosts, saveHost, removeHost, updateLastConnected } from './host-store'
+export {
+  loadHosts,
+  saveHost,
+  removeHost,
+  renameHost,
+  getNextHostName,
+  updateLastConnected
+} from './host-store'
 export type {
   RpcRequest,
   RpcResponse,

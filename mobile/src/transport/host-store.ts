@@ -30,6 +30,27 @@ export async function removeHost(hostId: string): Promise<void> {
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(filtered))
 }
 
+export async function renameHost(hostId: string, newName: string): Promise<void> {
+  const hosts = await loadHosts()
+  const host = hosts.find((h) => h.id === hostId)
+  if (host) {
+    host.name = newName
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(hosts))
+  }
+}
+
+export async function getNextHostName(): Promise<string> {
+  const hosts = await loadHosts()
+  const existingNumbers = hosts
+    .map((h) => {
+      const match = h.name.match(/^Host (\d+)$/)
+      return match ? parseInt(match[1]!, 10) : 0
+    })
+    .filter((n) => n > 0)
+  const next = existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1
+  return `Host ${next}`
+}
+
 export async function updateLastConnected(hostId: string): Promise<void> {
   const hosts = await loadHosts()
   const host = hosts.find((h) => h.id === hostId)

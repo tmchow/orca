@@ -150,6 +150,7 @@ const store = {
     }
   }),
   getWorktreeMeta: (worktreeId: string) => store.getAllWorktreeMeta()[worktreeId],
+  getGitHubCache: () => ({ pr: {}, issue: {} }),
   setWorktreeMeta: (_worktreeId: string, meta: Record<string, unknown>) =>
     ({
       ...store.getAllWorktreeMeta()[TEST_WORKTREE_ID],
@@ -743,7 +744,7 @@ describe('OrcaRuntimeService', () => {
     runtime.onPtyData('pty-1', 'build green\n', 321)
 
     const summaries = await runtime.getWorktreePs()
-    expect(summaries).toEqual({
+    expect(summaries).toMatchObject({
       worktrees: [
         {
           worktreeId: 'repo-1::/tmp/worktree-a',
@@ -761,6 +762,284 @@ describe('OrcaRuntimeService', () => {
       ],
       totalCount: 1,
       truncated: false
+    })
+  })
+
+  it('matches live terminal summaries when renderer worktree paths are equivalent but not identical', async () => {
+    const runtime = new OrcaRuntimeService(store)
+
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId: 'tab-1',
+          worktreeId: 'repo-1::/tmp/child/../worktree-a',
+          title: 'Claude',
+          activeLeafId: 'pane:1',
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'tab-1',
+          worktreeId: 'repo-1::/tmp/child/../worktree-a',
+          leafId: 'pane:1',
+          paneRuntimeId: 1,
+          ptyId: 'pty-1'
+        }
+      ]
+    })
+    runtime.onPtyData('pty-1', 'path-normalized\n', 456)
+
+    const summaries = await runtime.getWorktreePs()
+    expect(summaries.worktrees[0]).toMatchObject({
+      worktreeId: 'repo-1::/tmp/worktree-a',
+      liveTerminalCount: 1,
+      hasAttachedPty: true,
+      lastOutputAt: 456,
+      preview: 'path-normalized'
+    })
+  })
+
+  it('does not classify ordinary terminal output as working in worktree ps', async () => {
+    const runtime = new OrcaRuntimeService(store)
+
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId: 'tab-1',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          title: 'zsh',
+          activeLeafId: 'pane:1',
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'tab-1',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          leafId: 'pane:1',
+          paneRuntimeId: 1,
+          ptyId: 'pty-1',
+          title: 'zsh'
+        }
+      ]
+    })
+    runtime.onPtyData('pty-1', 'README.md\npackage.json\n', 999)
+
+    const summaries = await runtime.getWorktreePs()
+    expect(summaries.worktrees[0]).toMatchObject({
+      worktreeId: 'repo-1::/tmp/worktree-a',
+      liveTerminalCount: 1,
+      lastOutputAt: 999,
+      status: 'active'
+    })
+  })
+
+  it('classifies agent title state in worktree ps', async () => {
+    const runtime = new OrcaRuntimeService(store)
+
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId: 'tab-1',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          title: 'Codex working',
+          activeLeafId: 'pane:1',
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'tab-1',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          leafId: 'pane:1',
+          paneRuntimeId: 1,
+          ptyId: 'pty-1',
+          title: 'Codex working'
+        }
+      ]
+    })
+
+    const summaries = await runtime.getWorktreePs()
+    expect(summaries.worktrees[0]).toMatchObject({
+      worktreeId: 'repo-1::/tmp/worktree-a',
+      liveTerminalCount: 1,
+      status: 'working'
+    })
+  })
+
+  it('keeps mobile worktree ps populated when the renderer leaf graph is empty', async () => {
+    const runtime = new OrcaRuntimeService(store)
+
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId: 'tab-1',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          title: 'Claude',
+          activeLeafId: 'pane:1',
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'tab-1',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          leafId: 'pane:1',
+          paneRuntimeId: 1,
+          ptyId: 'pty-1'
+        }
+      ]
+    })
+    runtime.syncWindowGraph(1, { tabs: [], leaves: [] })
+    runtime.onPtyData('pty-1', 'still alive\n', 654)
+
+    const summaries = await runtime.getWorktreePs()
+    expect(summaries.worktrees[0]).toMatchObject({
+      worktreeId: 'repo-1::/tmp/worktree-a',
+      liveTerminalCount: 1,
+      hasAttachedPty: true,
+      lastOutputAt: 654,
+      preview: 'still alive'
+    })
+  })
+
+  it('counts a main-process PTY registration before any renderer leaf is synced', async () => {
+    const runtime = new OrcaRuntimeService(store)
+
+    runtime.registerPty('pty-1', 'repo-1::/tmp/worktree-a')
+    runtime.onPtyData('pty-1', 'registered first\n', 777)
+
+    const summaries = await runtime.getWorktreePs()
+    expect(summaries.worktrees[0]).toMatchObject({
+      worktreeId: 'repo-1::/tmp/worktree-a',
+      liveTerminalCount: 1,
+      hasAttachedPty: true,
+      lastOutputAt: 777,
+      preview: 'registered first'
+    })
+  })
+
+  it('discovers existing daemon PTYs from the controller process list', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      listProcesses: async () => [
+        {
+          id: 'repo-1::/tmp/worktree-a@@abc12345',
+          cwd: '/tmp/worktree-a',
+          title: 'bash'
+        }
+      ]
+    })
+
+    const summaries = await runtime.getWorktreePs()
+    expect(summaries.worktrees[0]).toMatchObject({
+      worktreeId: 'repo-1::/tmp/worktree-a',
+      liveTerminalCount: 1,
+      hasAttachedPty: true
+    })
+  })
+
+  it('lists and controls daemon PTYs when the renderer graph has no leaves', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const writes: string[] = []
+    runtime.setPtyController({
+      write: (_ptyId, data) => {
+        writes.push(data)
+        return true
+      },
+      kill: () => true,
+      listProcesses: async () => [
+        {
+          id: 'pty-orphan',
+          cwd: TEST_WORKTREE_PATH,
+          title: 'bash'
+        }
+      ]
+    })
+
+    runtime.attachWindow(TEST_WINDOW_ID)
+    runtime.syncWindowGraph(TEST_WINDOW_ID, { tabs: [], leaves: [] })
+
+    const list = await runtime.listTerminals(`id:${TEST_WORKTREE_ID}`)
+    expect(list).toMatchObject({
+      totalCount: 1,
+      truncated: false
+    })
+    expect(list.terminals[0]).toMatchObject({
+      worktreeId: TEST_WORKTREE_ID,
+      connected: true,
+      writable: true,
+      preview: ''
+    })
+
+    const handle = list.terminals[0]!.handle
+    runtime.onPtyData('pty-orphan', 'ready\n', 456)
+    await expect(runtime.readTerminal(handle)).resolves.toMatchObject({
+      handle,
+      status: 'running',
+      tail: ['ready'],
+      truncated: false
+    })
+
+    await expect(
+      runtime.sendTerminal(handle, {
+        text: 'pwd',
+        enter: true
+      })
+    ).resolves.toMatchObject({
+      handle,
+      accepted: true
+    })
+    expect(writes).toEqual(['pwd\r'])
+  })
+
+  it('counts persisted desktop terminal tabs when no live leaf is mounted', async () => {
+    const runtime = new OrcaRuntimeService({
+      ...store,
+      getWorkspaceSession: () => ({
+        activeRepoId: null,
+        activeWorktreeId: null,
+        activeTabId: null,
+        terminalLayoutsByTabId: {},
+        tabsByWorktree: {
+          'repo-1::/tmp/worktree-a': [
+            {
+              id: 'tab-1',
+              ptyId: null,
+              worktreeId: 'repo-1::/tmp/worktree-a',
+              title: 'Terminal 1',
+              customTitle: null,
+              color: null,
+              sortOrder: 0,
+              createdAt: 1
+            },
+            {
+              id: 'tab-2',
+              ptyId: 'repo-1::/tmp/worktree-a@@abc12345',
+              worktreeId: 'repo-1::/tmp/worktree-a',
+              title: 'Claude',
+              customTitle: null,
+              color: null,
+              sortOrder: 1,
+              createdAt: 2
+            }
+          ]
+        }
+      })
+    })
+
+    const summaries = await runtime.getWorktreePs()
+    expect(summaries.worktrees[0]).toMatchObject({
+      worktreeId: 'repo-1::/tmp/worktree-a',
+      liveTerminalCount: 2,
+      hasAttachedPty: true
     })
   })
 
@@ -901,6 +1180,30 @@ describe('OrcaRuntimeService', () => {
     await expect(runtime.getWorktreePs(-1)).rejects.toThrow('invalid_limit')
     await expect(runtime.listManagedWorktrees(undefined, 0)).rejects.toThrow('invalid_limit')
     await expect(runtime.searchRepoRefs('id:repo-1', 'main', -5)).rejects.toThrow('invalid_limit')
+  })
+
+  it('activates an existing worktree through the renderer notifier', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const activateWorktree = vi.fn()
+    runtime.setNotifier({
+      worktreesChanged: vi.fn(),
+      reposChanged: vi.fn(),
+      activateWorktree,
+      createTerminal: vi.fn(),
+      splitTerminal: vi.fn(),
+      renameTerminal: vi.fn(),
+      focusTerminal: vi.fn(),
+      closeTerminal: vi.fn()
+    })
+    runtime.attachWindow(TEST_WINDOW_ID)
+    runtime.syncWindowGraph(TEST_WINDOW_ID, { tabs: [], leaves: [] })
+
+    await expect(runtime.activateManagedWorktree(`id:${TEST_WORKTREE_ID}`)).resolves.toEqual({
+      repoId: TEST_REPO_ID,
+      worktreeId: TEST_WORKTREE_ID,
+      activated: true
+    })
+    expect(activateWorktree).toHaveBeenCalledWith(TEST_REPO_ID, TEST_WORKTREE_ID)
   })
 
   it('returns a setup launch payload for CLI-created worktrees when hooks are explicitly enabled', async () => {
@@ -1138,6 +1441,7 @@ describe('OrcaRuntimeService', () => {
         return nextMeta
       },
       removeWorktreeMeta: () => {},
+      getGitHubCache: () => ({ pr: {}, issue: {} }),
       getSettings: () => ({
         workspaceDir: 'C:\\workspaces',
         nestWorkspaces: false,

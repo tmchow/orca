@@ -2,6 +2,7 @@ import { useRef, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { StyleSheet } from 'react-native'
 import { WebView } from 'react-native-webview'
 import type { WebViewMessageEvent } from 'react-native-webview'
+import { colors } from '../theme/mobile-theme'
 
 export type TerminalWebViewHandle = {
   write: (data: string) => void
@@ -19,35 +20,68 @@ type TerminalMessage =
 // Why: TUI apps (Claude Code / Ink) emit escape codes with absolute cursor
 // positioning designed for the desktop's terminal dimensions (~150+ cols).
 // We initialize xterm at the desktop's exact cols/rows so those escape codes
-// render correctly, then CSS-scale the canvas to fit the phone viewport.
-// The WebView's native pinch-to-zoom handles zoom — it works correctly with
-// scroll in all directions and zooms around the pinch center point.
+// render correctly, then use a measured CSS transform: scale() to fit the
+// canvas into the phone viewport. The scale is computed after xterm opens
+// by measuring the rendered surface width, not hardcoded, so it adapts to
+// any terminal column count (80, 150, 200+). The WebView's native
+// pinch-to-zoom provides user-controlled zoom on top of the initial fit.
 const XTERM_HTML = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=0.5, minimum-scale=0.2, maximum-scale=4, user-scalable=yes">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.1, maximum-scale=5, user-scalable=yes">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
-    background: #1a1b26;
+    background: ${colors.terminalBg};
     overflow: auto;
+    width: 100%;
+    height: 100%;
   }
-  #terminal-container {
+  #scroll-container {
+    overflow: auto;
+    width: 100%;
+    height: 100%;
+  }
+  #terminal-surface {
+    transform-origin: top left;
     display: inline-block;
   }
 </style>
 </head>
 <body>
-<div id="terminal-container"></div>
+<div id="scroll-container">
+  <div id="terminal-surface"></div>
+</div>
 <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
 <script>
 (function() {
-  var container = document.getElementById('terminal-container');
+  var surface = document.getElementById('terminal-surface');
+  var scrollContainer = document.getElementById('scroll-container');
   var term = null;
   var writeQueue = [];
   var ready = false;
+  var currentScale = 1;
+
+  function computeFitScale() {
+    if (!term) return 1;
+    var el = term.element;
+    if (!el) return 1;
+    var termWidth = el.scrollWidth;
+    var vpWidth = window.innerWidth;
+    if (termWidth <= 0) return 1;
+    return Math.min(1, vpWidth / termWidth);
+  }
+
+  function applyFitScale() {
+    if (!term || !term.element) return;
+    currentScale = computeFitScale();
+    surface.style.transform = 'scale(' + currentScale + ')';
+    var el = term.element;
+    scrollContainer.style.width = Math.ceil(el.scrollWidth * currentScale) + 'px';
+    scrollContainer.style.height = Math.ceil(el.scrollHeight * currentScale) + 'px';
+  }
 
   function init(cols, rows) {
     ready = false;
@@ -58,10 +92,10 @@ const XTERM_HTML = `<!DOCTYPE html>
       cols: cols || 80,
       rows: rows || 24,
       theme: {
-        background: '#1a1b26',
+        background: '${colors.terminalBg}',
         foreground: '#c0caf5',
         cursor: '#c0caf5',
-        cursorAccent: '#1a1b26',
+        cursorAccent: '${colors.terminalBg}',
         selectionBackground: '#33467c',
         black: '#15161e',
         red: '#f7768e',
@@ -90,7 +124,7 @@ const XTERM_HTML = `<!DOCTYPE html>
       convertEol: false,
       allowProposedApi: true
     });
-    term.open(container);
+    term.open(surface);
 
     requestAnimationFrame(function() {
       ready = true;
@@ -98,6 +132,7 @@ const XTERM_HTML = `<!DOCTYPE html>
         term.write(writeQueue[i]);
       }
       writeQueue = [];
+      applyFitScale();
       notify({ type: 'ready', cols: cols, rows: rows });
     });
   }
@@ -137,6 +172,10 @@ const XTERM_HTML = `<!DOCTYPE html>
     try {
       handleMsg(typeof e.data === 'string' ? JSON.parse(e.data) : e.data);
     } catch(ex) {}
+  });
+
+  window.addEventListener('resize', function() {
+    applyFitScale();
   });
 
   if (window.Terminal) {
@@ -235,6 +274,6 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(
 const styles = StyleSheet.create({
   webview: {
     flex: 1,
-    backgroundColor: '#1a1b26'
+    backgroundColor: colors.terminalBg
   }
 })

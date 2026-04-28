@@ -552,6 +552,13 @@ export function registerPtyHandlers(
         return null
       }
     },
+    listProcesses: async () => {
+      const providerSessions = await Promise.all([
+        localProvider.listProcesses(),
+        ...Array.from(sshProviders.values(), (provider) => provider.listProcesses().catch(() => []))
+      ])
+      return providerSessions.flat()
+    },
     serializeBuffer: (ptyId) => {
       // Why: mobile xterm must start from the desktop xterm's exact screen
       // state and dimensions before live TUI chunks can render correctly.
@@ -737,6 +744,13 @@ export function registerPtyHandlers(
         runtime?.registerPreAllocatedHandleForPty(result.id, preAllocatedHandle)
       }
       ptySizes.set(result.id, { cols: args.cols, rows: args.rows })
+      if (
+        typeof args.worktreeId === 'string' &&
+        args.worktreeId.length > 0 &&
+        args.worktreeId.length <= 512
+      ) {
+        runtime?.registerPty(result.id, args.worktreeId)
+      }
       if (isClaudeLaunch) {
         markClaudePtySpawned(result.id)
       }

@@ -35,7 +35,12 @@ export const PairingOfferV1 = z.object({
 
 export type PairingOffer = z.infer<typeof PairingOfferV1>
 
-export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
+export type ConnectionState =
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
+  | 'reconnecting'
+  | 'auth-failed'
 
 export type HostProfile = {
   id: string

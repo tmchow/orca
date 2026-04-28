@@ -94,6 +94,18 @@ export function connect(
         return
       }
 
+      // Why: auth failure is distinct from transient disconnect — retrying
+      // with a rejected token causes infinite reconnect churn and hides the
+      // re-pair action the user needs to take.
+      if (!response.ok && response.error.code === 'unauthorized') {
+        intentionallyClosed = true
+        ws?.close()
+        ws = null
+        setState('auth-failed')
+        rejectAllPending('Unauthorized — pairing may be revoked')
+        return
+      }
+
       const isStreaming = response.ok && (response as RpcSuccess).streaming === true
 
       if (isStreaming) {
