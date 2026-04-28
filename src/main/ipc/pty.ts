@@ -403,6 +403,11 @@ export function registerPtyHandlers(
   const isLocalProvider = localProvider instanceof LocalPtyProvider
 
   localDataUnsub = localProvider.onData((payload) => {
+    if (!(localProvider instanceof LocalPtyProvider)) {
+      // Why: daemon-backed PTYs emit through provider.onData, not the
+      // LocalPtyProvider configure hook. Runtime tails power mobile read/stream.
+      runtime?.onPtyData(payload.id, payload.data, Date.now())
+    }
     if (mainWindow.isDestroyed()) {
       // Why: clear the pending flush timer so it doesn't fire after the window
       // is gone. Without this, macOS app re-activation leaks orphaned timers

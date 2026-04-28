@@ -13,6 +13,10 @@ import { useLocalSearchParams } from 'expo-router'
 import { connect, type RpcClient } from '../../../../src/transport/rpc-client'
 import { loadHosts } from '../../../../src/transport/host-store'
 import type { ConnectionState, RpcSuccess } from '../../../../src/transport/types'
+import {
+  TerminalWebView,
+  type TerminalWebViewHandle
+} from '../../../../src/terminal/TerminalWebView'
 
 type Terminal = {
   handle: string
@@ -25,11 +29,12 @@ export default function SessionScreen() {
   const [client, setClient] = useState<RpcClient | null>(null)
   const [connState, setConnState] = useState<ConnectionState>('disconnected')
   const [terminals, setTerminals] = useState<Terminal[]>([])
-  const [output, setOutput] = useState('')
   const [input, setInput] = useState('')
   const [activeHandle, setActiveHandle] = useState<string | null>(null)
-  const scrollRef = useRef<ScrollView>(null)
+  const termRef = useRef<TerminalWebViewHandle>(null)
   const unsubRef = useRef<(() => void) | null>(null)
+  const activeHandleRef = useRef<string | null>(null)
+  const terminalSizeRef = useRef({ cols: 80, rows: 24 })
 
   useEffect(() => {
     let rpcClient: RpcClient | null = null
@@ -49,6 +54,62 @@ export default function SessionScreen() {
     }
   }, [hostId])
 
+  useEffect(() => {
+    unsubRef.current?.()
+    unsubRef.current = null
+    activeHandleRef.current = null
+    setActiveHandle(null)
+    setTerminals([])
+    termRef.current?.clear()
+  }, [worktreeId])
+
+  const writeLines = useCallback((lines: string[] | string | undefined) => {
+    const text = Array.isArray(lines) ? lines.join('\r\n') : (lines ?? '')
+    if (text) {
+      termRef.current?.write(text)
+      if (Array.isArray(lines)) {
+        termRef.current?.write('\r\n')
+      }
+    }
+  }, [])
+
+  const subscribeToTerminal = useCallback(
+    (handle: string) => {
+      unsubRef.current?.()
+      if (!client) return
+
+      termRef.current?.clear()
+
+      const unsub = client.subscribe('terminal.subscribe', { terminal: handle }, (result) => {
+        const data = result as Record<string, unknown>
+        if (data.type === 'scrollback') {
+          // Why: init xterm at the desktop's exact cols/rows so escape
+          // codes with absolute cursor positioning render correctly.
+          // CSS transform: scale() in TerminalWebView shrinks the canvas
+          // to fit the phone viewport, producing a 1:1 miniature.
+          const cols = (data.cols as number) || 80
+          const rows = (data.rows as number) || 24
+          terminalSizeRef.current = { cols, rows }
+          termRef.current?.init(cols, rows)
+          // Why: prefer serialized xterm buffer (ANSI escape string that
+          // reconstructs the exact screen state) over line-based tail
+          // because TUI apps use absolute cursor positioning that only
+          // works at the original terminal dimensions.
+          if (typeof data.serialized === 'string' && data.serialized.length > 0) {
+            termRef.current?.write(data.serialized)
+          } else {
+            writeLines(data.lines as string[] | string | undefined)
+          }
+        } else if (data.type === 'data') {
+          termRef.current?.write(data.chunk as string)
+        }
+      })
+
+      unsubRef.current = unsub
+    },
+    [client, writeLines]
+  )
+
   const fetchTerminals = useCallback(async () => {
     if (!client) return
 
@@ -60,16 +121,26 @@ export default function SessionScreen() {
         const result = (response as RpcSuccess).result as { terminals: Terminal[] }
         setTerminals(result.terminals)
 
-        const active = result.terminals.find((t) => t.isActive) ?? result.terminals[0]
-        if (active && active.handle !== activeHandle) {
-          setActiveHandle(active.handle)
-          subscribeToTerminal(active.handle)
+        const current = activeHandleRef.current
+        if (!current || !result.terminals.some((t) => t.handle === current)) {
+          const active = result.terminals.find((t) => t.isActive) ?? result.terminals[0]
+          if (active) {
+            activeHandleRef.current = active.handle
+            setActiveHandle(active.handle)
+            subscribeToTerminal(active.handle)
+          } else {
+            unsubRef.current?.()
+            unsubRef.current = null
+            activeHandleRef.current = null
+            setActiveHandle(null)
+            termRef.current?.clear()
+          }
         }
       }
     } catch {
-      // Will retry on reconnect
+      // Failed to list terminals
     }
-  }, [client, worktreeId, activeHandle])
+  }, [client, worktreeId, subscribeToTerminal])
 
   useEffect(() => {
     if (connState === 'connected') {
@@ -77,32 +148,14 @@ export default function SessionScreen() {
     }
   }, [connState, fetchTerminals])
 
-  function subscribeToTerminal(handle: string) {
-    unsubRef.current?.()
-
-    if (!client) return
-
-    setOutput('')
-
-    const unsub = client.subscribe('terminal.subscribe', { terminal: handle }, (result) => {
-      const data = result as Record<string, unknown>
-      if (data.type === 'scrollback') {
-        setOutput(data.lines as string)
-        scrollToBottom()
-      } else if (data.type === 'data') {
-        setOutput((prev) => prev + (data.chunk as string))
-        scrollToBottom()
-      }
-    })
-
-    unsubRef.current = unsub
-  }
-
-  function scrollToBottom() {
-    setTimeout(() => {
-      scrollRef.current?.scrollToEnd({ animated: true })
-    }, 50)
-  }
+  const switchTab = useCallback(
+    (handle: string) => {
+      activeHandleRef.current = handle
+      setActiveHandle(handle)
+      subscribeToTerminal(handle)
+    },
+    [subscribeToTerminal]
+  )
 
   async function handleSend() {
     if (!client || !activeHandle || !input.trim()) return
@@ -142,10 +195,7 @@ export default function SessionScreen() {
             <Pressable
               key={t.handle}
               style={[styles.tab, t.handle === activeHandle && styles.tabActive]}
-              onPress={() => {
-                setActiveHandle(t.handle)
-                subscribeToTerminal(t.handle)
-              }}
+              onPress={() => switchTab(t.handle)}
             >
               <Text
                 style={[styles.tabText, t.handle === activeHandle && styles.tabTextActive]}
@@ -158,15 +208,7 @@ export default function SessionScreen() {
         </ScrollView>
       )}
 
-      <ScrollView
-        ref={scrollRef}
-        style={styles.outputScroll}
-        contentContainerStyle={styles.outputContent}
-      >
-        <Text style={styles.outputText} selectable>
-          {output || 'Waiting for output...'}
-        </Text>
-      </ScrollView>
+      <TerminalWebView ref={termRef} />
 
       <View style={styles.inputBar}>
         <TextInput
@@ -237,18 +279,6 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: '#e0e0e0'
-  },
-  outputScroll: {
-    flex: 1
-  },
-  outputContent: {
-    padding: 12
-  },
-  outputText: {
-    color: '#d4d4d4',
-    fontFamily: 'monospace',
-    fontSize: 13,
-    lineHeight: 18
   },
   inputBar: {
     flexDirection: 'row',

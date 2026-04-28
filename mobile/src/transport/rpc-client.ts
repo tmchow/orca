@@ -7,6 +7,12 @@ type PendingRequest = {
 
 type StreamingListener = (result: unknown) => void
 
+type StreamRequest = {
+  method: string
+  params: unknown
+  listener: StreamingListener
+}
+
 export type RpcClient = {
   sendRequest: (method: string, params?: unknown) => Promise<RpcResponse>
   subscribe: (method: string, params: unknown, onData: StreamingListener) => () => void
@@ -31,7 +37,7 @@ export function connect(
   let intentionallyClosed = false
 
   const pending = new Map<string, PendingRequest>()
-  const streamListeners = new Map<string, StreamingListener>()
+  const streamListeners = new Map<string, StreamRequest>()
   const stateListeners = new Set<(state: ConnectionState) => void>()
   // Callers that are waiting for the socket to reach 'connected' state
   const connectWaiters: Array<{ resolve: () => void; reject: (e: Error) => void }> = []
@@ -75,6 +81,9 @@ export function connect(
     ws.onopen = () => {
       reconnectAttempt = 0
       setState('connected')
+      for (const [id, stream] of streamListeners) {
+        sendRaw({ id, deviceToken, method: stream.method, params: stream.params })
+      }
     }
 
     ws.onmessage = (event) => {
@@ -88,9 +97,9 @@ export function connect(
       const isStreaming = response.ok && (response as RpcSuccess).streaming === true
 
       if (isStreaming) {
-        const listener = streamListeners.get(response.id)
-        if (listener && response.ok) {
-          listener((response as RpcSuccess).result)
+        const stream = streamListeners.get(response.id)
+        if (stream && response.ok) {
+          stream.listener((response as RpcSuccess).result)
         }
         return
       }
@@ -100,18 +109,18 @@ export function connect(
       if (response.ok) {
         const result = (response as RpcSuccess).result as Record<string, unknown> | null
         if (result && result.type === 'end') {
-          const listener = streamListeners.get(response.id)
-          if (listener) {
-            listener(result)
+          const stream = streamListeners.get(response.id)
+          if (stream) {
+            stream.listener(result)
             streamListeners.delete(response.id)
             return
           }
         }
         // Scrollback (first message from terminal.subscribe) also goes to stream listener
         if (result && result.type === 'scrollback') {
-          const listener = streamListeners.get(response.id)
-          if (listener) {
-            listener(result)
+          const stream = streamListeners.get(response.id)
+          if (stream) {
+            stream.listener(result)
             return
           }
         }
@@ -192,16 +201,28 @@ export function connect(
 
     subscribe(method: string, params: unknown, onData: StreamingListener): () => void {
       const id = nextId()
-      streamListeners.set(id, onData)
-      sendRaw({ id, deviceToken, method, params })
+      streamListeners.set(id, { method, params, listener: onData })
+
+      if (state === 'connected') {
+        sendRaw({ id, deviceToken, method, params })
+      }
 
       return () => {
+        const stream = streamListeners.get(id)
         streamListeners.delete(id)
         sendRaw({
           id: nextId(),
           deviceToken,
           method: 'terminal.unsubscribe',
-          params: { subscriptionId: id }
+          // Why: the runtime keys terminal subscription cleanup by terminal
+          // handle, not by the RPC request id used to open the stream.
+          params:
+            stream?.method === 'terminal.subscribe' &&
+            stream.params &&
+            typeof stream.params === 'object' &&
+            typeof (stream.params as { terminal?: unknown }).terminal === 'string'
+              ? { subscriptionId: (stream.params as { terminal: string }).terminal }
+              : { subscriptionId: id }
         })
       }
     },

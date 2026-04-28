@@ -2,36 +2,129 @@
 
 React Native companion app for Orca. Monitor worktrees, view terminal output, and send commands from your phone.
 
+Local development uses two processes:
+
+- Orca desktop/Electron from the repo root. This hosts the mobile WebSocket RPC server on port `6768`.
+- Expo Metro from `mobile/`. This serves the React Native app on port `8081`.
+
 ## Prerequisites
 
 - Node.js 24+
 - pnpm
-- Expo Go app on your phone (from App Store / Google Play), **or** a dev client build
+- Xcode and/or Android Studio tooling for simulator or device builds
+- Expo Go on your phone, or a development client build when native modules are needed
+- Phone and desktop on the same LAN when testing a physical phone
 
-## Quick Start
+## Start Desktop Orca
+
+From the repository root:
+
+```bash
+pnpm install
+pnpm dev
+```
+
+Confirm the mobile RPC server is listening:
+
+```bash
+lsof -nP -iTCP:6768 -sTCP:LISTEN
+```
+
+Restart `pnpm dev` after changing Electron main-process code. Metro hot reload only applies to the mobile JavaScript bundle.
+
+## Start The Mobile App
 
 ```bash
 cd mobile
 pnpm install
-pnpm start                 # starts Expo dev server
+pnpm start
 ```
 
-Scan the QR code shown in the terminal with your phone's camera (iOS) or the Expo Go app (Android).
+Scan the Expo QR code with your phone's camera on iOS, or Expo Go on Android.
+
+For a native dev-client build:
+
+```bash
+pnpm exec expo run:android
+pnpm exec expo run:ios
+pnpm start --dev-client
+```
+
+## Pair With Desktop Orca
+
+1. Open Orca desktop.
+2. Go to Settings > Mobile.
+3. Scan the pairing QR code from the mobile app.
+4. Confirm the mobile host endpoint is `ws://<desktop-ip>:6768`.
+
+For the Android emulator, use `ws://10.0.2.2:6768`. For a physical phone, use the desktop LAN IP, for example `ws://192.168.0.179:6768`.
+
+If the phone has a stale host entry, remove it from the app and pair again.
 
 ## Development Paths
 
-### I have an Android phone
+### Android Phone
 
 1. Install Expo Go from Google Play
 2. Run `pnpm start`, scan QR with Expo Go
-3. For native modules (camera): `npx expo prebuild --platform android && cd android && ./gradlew assembleDebug`
-4. Install APK: `adb install android/app/build/outputs/apk/debug/app-debug.apk`
-5. Run with `pnpm start --dev-client`
+3. For native modules: `pnpm exec expo run:android`
+4. Run with `pnpm start --dev-client`
 
-### I only have a Mac (iOS Simulator)
+### iOS Simulator
 
 1. Install Xcode from the App Store
 2. Run `pnpm start --ios` to open in iOS Simulator
+
+## Physical Phone Debugging
+
+The phone can be inspected through the connected device tooling:
+
+```bash
+orca snapshot --json
+orca click --element @e3 --json
+orca fill --element @e1 --value "ls" --json
+orca screenshot --json
+```
+
+Use `snapshot` first to find the current element refs, then click/fill those refs. After mobile file edits, Metro usually hot reloads automatically, but navigating out of and back into the session screen can be useful because it re-runs `terminal.subscribe`.
+
+## Terminal Streaming Repro Without A Phone
+
+Use this when terminal output does not render on device and you need to split server streaming bugs from WebView/UI bugs:
+
+```bash
+cd mobile
+ORCA_MOBILE_WS_URL=ws://127.0.0.1:6768 pnpm exec tsx scripts/test-subscribe.ts <deviceToken>
+```
+
+You can pass a worktree selector as the second argument:
+
+```bash
+pnpm exec tsx scripts/test-subscribe.ts <deviceToken> "id:<worktreeId>"
+pnpm exec tsx scripts/test-subscribe.ts <deviceToken> "path:/absolute/worktree/path"
+pnpm exec tsx scripts/test-subscribe.ts <deviceToken> "name:my-worktree"
+```
+
+The expected result includes:
+
+```text
+streamSawMarker: true
+readSawMarker: true
+```
+
+If this repro fails, debug the desktop runtime/PTY path before the mobile WebView. If it passes but the phone is blank, debug the session screen or `TerminalWebView` readiness/queueing path.
+
+## Validation
+
+Run these checks before committing mobile terminal changes:
+
+```bash
+cd mobile
+pnpm exec tsc --noEmit
+pnpm lint
+cd ..
+pnpm typecheck:node
+```
 
 ## Mock Server
 
@@ -58,8 +151,10 @@ mobile/
 │   ├── index.tsx          # Home screen — paired hosts list
 │   └── pair-scan.tsx      # QR code scanning screen
 ├── src/
-│   └── transport/         # WebSocket RPC client (TBD)
+│   ├── terminal/          # Terminal WebView and xterm bridge
+│   └── transport/         # WebSocket RPC client
 ├── scripts/
+│   ├── test-subscribe.ts  # Desktop streaming repro without a phone
 │   └── mock-server.ts     # Standalone mock WebSocket server
 └── assets/                # App icons and splash screen
 ```
