@@ -51,6 +51,11 @@ const ACCESSORY_KEYS: AccessoryKey[] = [
   { label: 'Ctrl+D', bytes: '\x04', accessibilityLabel: 'Send EOF' }
 ]
 
+// Why: persists fitted-handle sets across component remounts (e.g. navigating
+// away and back). React state resets on unmount, but we need to remember which
+// terminals were phone-fitted so we can auto-refit them on return.
+const persistedFittedHandles = new Map<string, Set<string>>()
+
 const STATUS_LABELS: Record<ConnectionState, string> = {
   connecting: 'Connecting',
   connected: 'Connected',
@@ -80,11 +85,29 @@ export default function SessionScreen() {
   const [createError, setCreateError] = useState('')
   const [actionTarget, setActionTarget] = useState<Terminal | null>(null)
   const [renameTarget, setRenameTarget] = useState<Terminal | null>(null)
-  const [fittedHandles, setFittedHandles] = useState<Set<string>>(new Set())
+  const [fittedHandles, setFittedHandles] = useState<Set<string>>(
+    () => persistedFittedHandles.get(worktreeId!) ?? new Set()
+  )
   const [fitPending, setFitPending] = useState(false)
   const deviceTokenRef = useRef<string | null>(null)
   const fittedHandlesRef = useRef<Set<string>>(fittedHandles)
   fittedHandlesRef.current = fittedHandles
+  // Why: wraps setFittedHandles to also persist to the module-level map,
+  // so fitted state survives component remount when navigating away and back.
+  const updateFittedHandles = useCallback(
+    (updater: (prev: Set<string>) => Set<string>) => {
+      setFittedHandles((prev) => {
+        const next = updater(prev)
+        persistedFittedHandles.set(worktreeId!, next)
+        return next
+      })
+    },
+    [worktreeId]
+  )
+  // Why: the subscribe callback captures fitPending via closure, but needs
+  // the current value to avoid re-fitting while a fit is already in progress.
+  const fitPendingRef = useRef(false)
+  fitPendingRef.current = fitPending
   // Why: tracks terminals the user explicitly restored to desktop size.
   // Without this, switching away and back would auto-fit them again.
   const manuallyRestoredRef = useRef<Set<string>>(new Set())
@@ -167,11 +190,11 @@ export default function SessionScreen() {
       })
       if (!response.ok) return
 
-      setFittedHandles((prev) => new Set(prev).add(handle))
+      updateFittedHandles((prev) => new Set(prev).add(handle))
       resubscribeWithoutFocus(handle)
       setTimeout(() => termRef.current?.resetZoom(), 500)
     },
-    [resubscribeWithoutFocus]
+    [resubscribeWithoutFocus, updateFittedHandles]
   )
 
   const handleFitToPhone = useCallback(async () => {
@@ -201,7 +224,7 @@ export default function SessionScreen() {
       if (!response.ok) return
 
       manuallyRestoredRef.current.add(handle)
-      setFittedHandles((prev) => {
+      updateFittedHandles((prev) => {
         const next = new Set(prev)
         next.delete(handle)
         return next
@@ -211,7 +234,7 @@ export default function SessionScreen() {
     } catch {
       // Restore failed — keep current state.
     }
-  }, [client, activeHandle, resubscribeWithoutFocus])
+  }, [client, activeHandle, resubscribeWithoutFocus, updateFittedHandles])
 
   useEffect(() => {
     let rpcClient: RpcClient | null = null
@@ -290,15 +313,17 @@ export default function SessionScreen() {
             } else {
               writeLines(data.lines as string[] | string | undefined)
             }
-            // Why: only auto-fit terminals created during this mobile session.
-            // Existing desktop terminals keep their dimensions until the user
-            // explicitly chooses "Fit to Phone" — auto-fitting every terminal
-            // on subscribe was confusing because it showed "Restore Desktop
-            // Size" for terminals the user never intentionally resized.
+            // Why: auto-fit terminals that (a) were created during this
+            // mobile session, or (b) the user previously fitted to phone
+            // and didn't manually restore. Case (b) handles the scenario
+            // where navigating away disconnects the WebSocket (triggering
+            // auto-restore on desktop) and coming back should re-apply
+            // the phone fit so the user doesn't lose their aspect ratio.
             if (
-              mobileCreatedHandlesRef.current.has(handle) &&
-              !fittedHandlesRef.current.has(handle) &&
-              !manuallyRestoredRef.current.has(handle)
+              !manuallyRestoredRef.current.has(handle) &&
+              (mobileCreatedHandlesRef.current.has(handle) ||
+                fittedHandlesRef.current.has(handle)) &&
+              !fitPendingRef.current
             ) {
               setTimeout(() => {
                 if (activeHandleRef.current === handle && subscribeSeqRef.current === seq) {
