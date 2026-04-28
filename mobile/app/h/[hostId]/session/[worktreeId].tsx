@@ -21,6 +21,8 @@ import {
   type TerminalWebViewHandle
 } from '../../../../src/terminal/TerminalWebView'
 import { StatusDot } from '../../../../src/components/StatusDot'
+import { ActionSheetModal } from '../../../../src/components/ActionSheetModal'
+import { TextInputModal } from '../../../../src/components/TextInputModal'
 import { colors, spacing, radii, typography } from '../../../../src/theme/mobile-theme'
 
 type Terminal = {
@@ -76,6 +78,8 @@ export default function SessionScreen() {
   const [activeHandle, setActiveHandle] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState('')
+  const [actionTarget, setActionTarget] = useState<Terminal | null>(null)
+  const [renameTarget, setRenameTarget] = useState<Terminal | null>(null)
   const termRef = useRef<TerminalWebViewHandle>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const activeHandleRef = useRef<string | null>(null)
@@ -315,6 +319,61 @@ export default function SessionScreen() {
     }
   }
 
+  async function handleRenameTerminal(value: string) {
+    if (!client || !renameTarget) return
+    const target = renameTarget
+    setRenameTarget(null)
+
+    try {
+      const title = value.trim()
+      const response = await client.sendRequest('terminal.rename', {
+        terminal: target.handle,
+        title
+      })
+      if (response.ok) {
+        setTerminals((prev) =>
+          prev.map((terminal) =>
+            terminal.handle === target.handle
+              ? { ...terminal, title: title || 'Terminal' }
+              : terminal
+          )
+        )
+        setTimeout(() => void fetchTerminals(), 300)
+      }
+    } catch {
+      // Rename failed — refresh will restore the server title.
+    }
+  }
+
+  async function handleCloseTerminal(target: Terminal) {
+    if (!client) return
+
+    try {
+      const response = await client.sendRequest('terminal.close', {
+        terminal: target.handle
+      })
+      if (response.ok) {
+        const next = terminals.filter((terminal) => terminal.handle !== target.handle)
+        setTerminals(next)
+        if (activeHandleRef.current === target.handle) {
+          const replacement = next[0] ?? null
+          activeHandleRef.current = replacement?.handle ?? null
+          setActiveHandle(replacement?.handle ?? null)
+          if (replacement) {
+            subscribeToTerminal(replacement.handle)
+          } else {
+            unsubRef.current?.()
+            unsubRef.current = null
+            termRef.current?.clear()
+          }
+        }
+        setTimeout(() => void fetchTerminals(), 300)
+      }
+    } catch {
+      // Close failed — keep the local tab list unchanged.
+    }
+  }
+
   const showLoadingState = connState === 'connected' && !terminalsLoaded
   const showEmptyState =
     connState === 'connected' && terminalsLoaded && terminals.length === 0 && !activeHandle
@@ -370,6 +429,8 @@ export default function SessionScreen() {
                   key={t.handle}
                   style={[styles.tab, t.handle === activeHandle && styles.tabActive]}
                   onPress={() => switchTab(t.handle)}
+                  onLongPress={() => setActionTarget(t)}
+                  delayLongPress={400}
                 >
                   <Text
                     style={[styles.tabText, t.handle === activeHandle && styles.tabTextActive]}
@@ -379,19 +440,19 @@ export default function SessionScreen() {
                   </Text>
                 </Pressable>
               ))}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.newTerminalButton,
+                  pressed && styles.newTerminalButtonPressed,
+                  (creating || connState !== 'connected') && styles.newTerminalButtonDisabled
+                ]}
+                disabled={creating || connState !== 'connected'}
+                onPress={() => void handleCreateTerminal()}
+                accessibilityLabel="New terminal"
+              >
+                <Plus size={16} color={colors.textSecondary} strokeWidth={2.2} />
+              </Pressable>
             </ScrollView>
-            <Pressable
-              style={({ pressed }) => [
-                styles.newTerminalButton,
-                pressed && styles.newTerminalButtonPressed,
-                (creating || connState !== 'connected') && styles.newTerminalButtonDisabled
-              ]}
-              disabled={creating || connState !== 'connected'}
-              onPress={() => void handleCreateTerminal()}
-              accessibilityLabel="New terminal"
-            >
-              <Plus size={16} color={colors.textSecondary} strokeWidth={2.2} />
-            </Pressable>
           </View>
         )}
       </SafeAreaView>
@@ -470,6 +531,43 @@ export default function SessionScreen() {
           <ArrowUp size={18} color="#fff" strokeWidth={2.5} />
         </Pressable>
       </View>
+
+      <ActionSheetModal
+        visible={actionTarget != null}
+        title={actionTarget?.title || 'Terminal'}
+        actions={[
+          {
+            label: 'Rename',
+            onPress: () => {
+              const target = actionTarget
+              setActionTarget(null)
+              if (target) {
+                setRenameTarget(target)
+              }
+            }
+          },
+          {
+            label: 'Close',
+            destructive: true,
+            onPress: () => {
+              const target = actionTarget
+              setActionTarget(null)
+              if (target) {
+                void handleCloseTerminal(target)
+              }
+            }
+          }
+        ]}
+        onClose={() => setActionTarget(null)}
+      />
+      <TextInputModal
+        visible={renameTarget != null}
+        title="Rename Terminal"
+        defaultValue={renameTarget?.title || 'Terminal'}
+        placeholder="Terminal name"
+        onSubmit={(value) => void handleRenameTerminal(value)}
+        onCancel={() => setRenameTarget(null)}
+      />
     </KeyboardAvoidingView>
   )
 }
@@ -533,7 +631,7 @@ const styles = StyleSheet.create({
   },
   tabContent: {
     paddingLeft: spacing.sm,
-    paddingRight: spacing.xs
+    paddingRight: spacing.sm
   },
   tab: {
     width: 128,
@@ -562,8 +660,8 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: 'center',
     justifyContent: 'center',
-    borderLeftWidth: 1,
-    borderLeftColor: colors.borderSubtle
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent'
   },
   newTerminalButtonPressed: {
     backgroundColor: colors.bgRaised

@@ -79,7 +79,7 @@ export function ActionSheetModal({ visible, title, message, actions, onClose }: 
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.68)',
+    backgroundColor: 'transparent',
     justifyContent: 'flex-end',
     paddingHorizontal: spacing.sm
   },
