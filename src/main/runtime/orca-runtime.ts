@@ -299,6 +299,13 @@ export class OrcaRuntimeService {
   // These listeners fire on every onPtyData call, enabling real-time streaming
   // without polling. Keyed by ptyId for O(1) lookup per data event.
   private dataListeners = new Map<string, Set<(data: string) => void>>()
+  // Why: mobile clients need to know when the desktop restores a terminal
+  // from mobile-fit so they can update their UI. These listeners are
+  // invoked from resizeForClient and onClientDisconnected/onPtyExit.
+  private fitOverrideListeners = new Map<
+    string,
+    Set<(event: { mode: 'mobile-fit' | 'desktop-fit'; cols: number; rows: number }) => void>
+  >()
   private subscriptionCleanups = new Map<string, () => void>()
   // Why: mobile clients subscribe to desktop notifications via
   // notifications.subscribe. This set enables fan-out — each connected
@@ -625,6 +632,39 @@ export class OrcaRuntimeService {
     }
   }
 
+  subscribeToFitOverrideChanges(
+    ptyId: string,
+    listener: (event: { mode: 'mobile-fit' | 'desktop-fit'; cols: number; rows: number }) => void
+  ): () => void {
+    let listeners = this.fitOverrideListeners.get(ptyId)
+    if (!listeners) {
+      listeners = new Set()
+      this.fitOverrideListeners.set(ptyId, listeners)
+    }
+    listeners.add(listener)
+    return () => {
+      listeners.delete(listener)
+      if (listeners.size === 0) {
+        this.fitOverrideListeners.delete(ptyId)
+      }
+    }
+  }
+
+  private notifyFitOverrideListeners(
+    ptyId: string,
+    mode: 'mobile-fit' | 'desktop-fit',
+    cols: number,
+    rows: number
+  ): void {
+    const listeners = this.fitOverrideListeners.get(ptyId)
+    if (!listeners) {
+      return
+    }
+    for (const listener of listeners) {
+      listener({ mode, cols, rows })
+    }
+  }
+
   serializeTerminalBuffer(
     ptyId: string
   ): Promise<{ data: string; cols: number; rows: number } | null> {
@@ -854,6 +894,9 @@ export class OrcaRuntimeService {
     // normally computes desktop dims from the container, but passing them here
     // provides a guaranteed fallback to avoid leaving xterm at phone dims.
     this.notifier?.terminalFitOverrideChanged(ptyId, 'desktop-fit', prevCols ?? 0, prevRows ?? 0)
+    // Why: mobile clients subscribed to this terminal need to know the desktop
+    // restored, so they can update their UI (clear fitted state, resubscribe).
+    this.notifyFitOverrideListeners(ptyId, 'desktop-fit', prevCols ?? 0, prevRows ?? 0)
 
     return {
       cols: prevCols ?? 0,
@@ -887,6 +930,7 @@ export class OrcaRuntimeService {
         // Best-effort cleanup — the PTY may already be gone.
         this.terminalFitOverrides.delete(ptyId)
         this.notifier?.terminalFitOverrideChanged(ptyId, 'desktop-fit', 0, 0)
+        this.notifyFitOverrideListeners(ptyId, 'desktop-fit', 0, 0)
       }
     }
   }
@@ -895,6 +939,7 @@ export class OrcaRuntimeService {
     if (this.terminalFitOverrides.has(ptyId)) {
       this.terminalFitOverrides.delete(ptyId)
       this.notifier?.terminalFitOverrideChanged(ptyId, 'desktop-fit', 0, 0)
+      this.notifyFitOverrideListeners(ptyId, 'desktop-fit', 0, 0)
     }
     this.disposeHeadlessTerminal(ptyId)
     this.agentDetector?.onExit(ptyId)

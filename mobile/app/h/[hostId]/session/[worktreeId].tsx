@@ -239,6 +239,18 @@ export default function SessionScreen() {
           } else if (data.type === 'data') {
             const chunk = data.chunk as string
             getTerminalRef(handle)?.write(chunk)
+          } else if (data.type === 'fit-override-changed') {
+            const mode = data.mode as string
+            if (mode === 'desktop-fit') {
+              updateFittedHandles((prev) => {
+                const next = new Set(prev)
+                next.delete(handle)
+                return next
+              })
+              manuallyRestoredRef.current.add(handle)
+              resubscribeWithoutFocus(handle)
+              setTimeout(() => getTerminalRef(handle)?.resetZoom(), 500)
+            }
           }
         })
 
@@ -250,7 +262,7 @@ export default function SessionScreen() {
         subscribingHandlesRef.current.delete(handle)
       })()
     },
-    [client, getTerminalRef, unsubscribeTerminal]
+    [client, getTerminalRef, unsubscribeTerminal, resubscribeWithoutFocus, updateFittedHandles]
   )
 
   // Why: extracted so both manual "Fit to Phone" and auto-fit-on-subscribe
@@ -446,6 +458,21 @@ export default function SessionScreen() {
           } else if (data.type === 'data') {
             const chunk = data.chunk as string
             getTerminalRef(handle)?.write(chunk)
+          } else if (data.type === 'fit-override-changed') {
+            // Why: the desktop restored the terminal from mobile-fit. Clear
+            // local fitted state and resubscribe to get a fresh scrollback
+            // snapshot at the restored desktop dimensions.
+            const mode = data.mode as string
+            if (mode === 'desktop-fit') {
+              updateFittedHandles((prev) => {
+                const next = new Set(prev)
+                next.delete(handle)
+                return next
+              })
+              manuallyRestoredRef.current.add(handle)
+              resubscribeWithoutFocus(handle)
+              setTimeout(() => getTerminalRef(handle)?.resetZoom(), 500)
+            }
           }
         })
 
@@ -457,7 +484,7 @@ export default function SessionScreen() {
         subscribingHandlesRef.current.delete(handle)
       })()
     },
-    [client, fitToPhoneCore, getTerminalRef]
+    [client, fitToPhoneCore, getTerminalRef, resubscribeWithoutFocus, updateFittedHandles]
   )
 
   const fetchTerminals = useCallback(

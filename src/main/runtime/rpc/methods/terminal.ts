@@ -245,15 +245,28 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
       // as they arrive. Cleanup happens via the unsubscribe mechanism or
       // connection-scoped cleanup in the transport layer.
       await new Promise<void>((resolve) => {
-        const unsubscribe = runtime.subscribeToTerminalData(leaf.ptyId!, (data) => {
+        const unsubscribeData = runtime.subscribeToTerminalData(leaf.ptyId!, (data) => {
           emit({ type: 'data', chunk: data })
+        })
+
+        // Why: mobile clients need to know when the desktop restores a terminal
+        // from mobile-fit so they can clear their fitted state and resubscribe
+        // for a fresh scrollback snapshot at the restored dimensions.
+        const unsubscribeFit = runtime.subscribeToFitOverrideChanges(leaf.ptyId!, (event) => {
+          emit({
+            type: 'fit-override-changed',
+            mode: event.mode,
+            cols: event.cols,
+            rows: event.rows
+          })
         })
 
         // Why: store the cleanup function so terminal.unsubscribe and
         // connection-close cleanup can call it.
         const subscriptionId = params.terminal
         runtime.registerSubscriptionCleanup(subscriptionId, () => {
-          unsubscribe()
+          unsubscribeData()
+          unsubscribeFit()
           emit({ type: 'end' })
           resolve()
         })
