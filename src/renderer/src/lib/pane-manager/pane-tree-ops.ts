@@ -1,4 +1,9 @@
-import type { DropZone, ManagedPaneInternal, PaneStyleOptions } from './pane-manager-types'
+import type {
+  DropZone,
+  ManagedPane,
+  ManagedPaneInternal,
+  PaneStyleOptions
+} from './pane-manager-types'
 import { createDivider } from './pane-divider'
 import { getFitOverrideForPane } from './mobile-fit-overrides'
 
@@ -11,12 +16,12 @@ export { findLineByContent, captureScrollState, restoreScrollState } from './pan
 type TreeOpsCallbacks = {
   getRoot: () => HTMLElement
   getStyleOptions: () => PaneStyleOptions
-  safeFit: (pane: ManagedPaneInternal) => void
+  safeFit: (pane: ManagedPane) => void
   refitPanesUnder: (el: HTMLElement) => void
   onLayoutChanged?: () => void
 }
 
-function getProposedDimensions(pane: ManagedPaneInternal): { cols: number; rows: number } | null {
+function getProposedDimensions(pane: ManagedPane): { cols: number; rows: number } | null {
   try {
     return pane.fitAddon.proposeDimensions() ?? null
   } catch {
@@ -34,7 +39,7 @@ function getProposedDimensions(pane: ManagedPaneInternal): { cols: number; rows:
 // scrollTop to 0 asynchronously. splitPane captures the pre-split state and
 // scheduleSplitScrollRestore owns the authoritative restore on a timer, so
 // safeFit here just fits and lets the scheduled restore do its job.
-export function safeFit(pane: ManagedPaneInternal): void {
+export function safeFit(pane: ManagedPane): void {
   try {
     // Why: when a mobile client has resized this PTY to phone dimensions,
     // the desktop must keep xterm at those dimensions instead of fitting to
