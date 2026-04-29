@@ -204,6 +204,8 @@ export default function SessionScreen() {
   // We skip terminal.focus to avoid a race where the desktop renderer
   // auto-fits the pane back to desktop dimensions before the override
   // takes effect.
+  const resubscribeWithoutFocusRef = useRef<(handle: string) => void>(() => {})
+
   const resubscribeWithoutFocus = useCallback(
     (handle: string) => {
       unsubscribeTerminal(handle)
@@ -248,7 +250,7 @@ export default function SessionScreen() {
                 return next
               })
               manuallyRestoredRef.current.add(handle)
-              resubscribeWithoutFocus(handle)
+              resubscribeWithoutFocusRef.current(handle)
               setTimeout(() => getTerminalRef(handle)?.resetZoom(), 500)
             }
           }
@@ -262,8 +264,10 @@ export default function SessionScreen() {
         subscribingHandlesRef.current.delete(handle)
       })()
     },
-    [client, getTerminalRef, unsubscribeTerminal, resubscribeWithoutFocus, updateFittedHandles]
+    [client, getTerminalRef, unsubscribeTerminal, updateFittedHandles]
   )
+
+  resubscribeWithoutFocusRef.current = resubscribeWithoutFocus
 
   // Why: extracted so both manual "Fit to Phone" and auto-fit-on-subscribe
   // can share the same measure → resize → resubscribe logic. Takes explicit
