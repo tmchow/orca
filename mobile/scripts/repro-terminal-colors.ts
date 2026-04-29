@@ -311,7 +311,11 @@ ws.on('open', () => {
 })
 
 ws.on('message', (data) => {
-  const plaintext = decrypt(data.toString())
+  const raw = data.toString()
+  if (raw.startsWith('{')) {
+    return
+  }
+  const plaintext = decrypt(raw)
   if (!plaintext) return
 
   const response = JSON.parse(plaintext) as RpcResponse
