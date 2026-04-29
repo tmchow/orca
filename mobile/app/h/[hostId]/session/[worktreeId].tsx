@@ -12,6 +12,7 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import * as Haptics from 'expo-haptics'
 import { ArrowUp, ChevronLeft, Monitor, Plus, Smartphone } from 'lucide-react-native'
 import { connect, type RpcClient } from '../../../../src/transport/rpc-client'
 import { loadHosts } from '../../../../src/transport/host-store'
@@ -69,11 +70,13 @@ export default function SessionScreen() {
   const {
     hostId,
     worktreeId,
-    name: worktreeName
+    name: worktreeName,
+    agent: agentCommand
   } = useLocalSearchParams<{
     hostId: string
     worktreeId: string
     name?: string
+    agent?: string
   }>()
   const router = useRouter()
   const [client, setClient] = useState<RpcClient | null>(null)
@@ -116,6 +119,7 @@ export default function SessionScreen() {
   // Existing desktop terminals should keep their desktop dimensions until
   // the user explicitly chooses "Fit to Phone".
   const mobileCreatedHandlesRef = useRef<Set<string>>(new Set())
+  const agentCommandConsumedRef = useRef(false)
   const termRef = useRef<TerminalWebViewHandle>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const activeHandleRef = useRef<string | null>(null)
@@ -123,14 +127,9 @@ export default function SessionScreen() {
 
   const canSend = connState === 'connected' && activeHandle != null
 
-  const writeLines = useCallback((lines: string[] | string | undefined) => {
+  const formatLines = useCallback((lines: string[] | string | undefined) => {
     const text = Array.isArray(lines) ? lines.join('\r\n') : (lines ?? '')
-    if (text) {
-      termRef.current?.write(text)
-      if (Array.isArray(lines)) {
-        termRef.current?.write('\r\n')
-      }
-    }
+    return text && Array.isArray(lines) ? `${text}\r\n` : text
   }, [])
 
   // Why: after a fit/restore resize the PTY grid changes, so we must
@@ -160,12 +159,11 @@ export default function SessionScreen() {
           if (data.type === 'scrollback') {
             const cols = (data.cols as number) || 80
             const rows = (data.rows as number) || 24
-            termRef.current?.init(cols, rows)
-            if (typeof data.serialized === 'string' && data.serialized.length > 0) {
-              termRef.current?.write(data.serialized)
-            } else {
-              writeLines(data.lines as string[] | string | undefined)
-            }
+            const initialData =
+              typeof data.serialized === 'string' && data.serialized.length > 0
+                ? data.serialized
+                : formatLines(data.lines as string[] | string | undefined)
+            termRef.current?.init(cols, rows, initialData)
           } else if (data.type === 'data') {
             termRef.current?.write(data.chunk as string)
           }
@@ -178,7 +176,7 @@ export default function SessionScreen() {
         }
       })()
     },
-    [client, writeLines]
+    [client, formatLines]
   )
 
   // Why: extracted so both manual "Fit to Phone" and auto-fit-on-subscribe
@@ -285,15 +283,25 @@ export default function SessionScreen() {
       subscribeSeqRef.current = seq
       const rpcClient = client
 
+      // Why: phone-fitted terminals skip terminal.focus (which would cause
+      // the desktop to auto-resize back to desktop dimensions). Instead we
+      // subscribe directly and compare the scrollback geometry against the
+      // phone dimensions. If they match, the content is already correct and
+      // we avoid a resize→SIGWINCH→redraw cycle that strips TUI colors.
+      // If they don't match (desktop auto-restored while we were away),
+      // we refit — but only then.
+      const shouldAutoFit =
+        !manuallyRestoredRef.current.has(handle) &&
+        (mobileCreatedHandlesRef.current.has(handle) || fittedHandlesRef.current.has(handle))
+
       void (async () => {
-        try {
-          // Why: hidden/new desktop panes can still be at their 80x24 spawn
-          // geometry. Focusing first lets the desktop renderer fit xterm,
-          // resize the PTY, and register a serializer before mobile subscribes.
-          await client.sendRequest('terminal.focus', { terminal: handle })
-          await new Promise((resolve) => setTimeout(resolve, 150))
-        } catch {
-          // Continue with best-effort streaming if desktop focus is unavailable.
+        if (!shouldAutoFit) {
+          try {
+            await client.sendRequest('terminal.focus', { terminal: handle })
+            await new Promise((resolve) => setTimeout(resolve, 150))
+          } catch {
+            // Continue with best-effort streaming if desktop focus is unavailable.
+          }
         }
 
         if (subscribeSeqRef.current !== seq || activeHandleRef.current !== handle) {
@@ -308,29 +316,25 @@ export default function SessionScreen() {
           if (data.type === 'scrollback') {
             const cols = (data.cols as number) || 80
             const rows = (data.rows as number) || 24
-            termRef.current?.init(cols, rows)
-            if (typeof data.serialized === 'string' && data.serialized.length > 0) {
-              termRef.current?.write(data.serialized)
-            } else {
-              writeLines(data.lines as string[] | string | undefined)
-            }
-            // Why: auto-fit terminals that (a) were created during this
-            // mobile session, or (b) the user previously fitted to phone
-            // and didn't manually restore. Case (b) handles the scenario
-            // where navigating away disconnects the WebSocket (triggering
-            // auto-restore on desktop) and coming back should re-apply
-            // the phone fit so the user doesn't lose their aspect ratio.
-            if (
-              !manuallyRestoredRef.current.has(handle) &&
-              (mobileCreatedHandlesRef.current.has(handle) ||
-                fittedHandlesRef.current.has(handle)) &&
-              !fitPendingRef.current
-            ) {
-              setTimeout(() => {
-                if (activeHandleRef.current === handle && subscribeSeqRef.current === seq) {
-                  void fitToPhoneCore(handle, rpcClient)
+            const initialData =
+              typeof data.serialized === 'string' && data.serialized.length > 0
+                ? data.serialized
+                : formatLines(data.lines as string[] | string | undefined)
+            termRef.current?.init(cols, rows, initialData)
+            // Why: only refit if the scrollback geometry doesn't match
+            // the phone WebView dimensions. This avoids unnecessary
+            // resize→SIGWINCH cycles on tab switches when the terminal
+            // is already at the correct phone size.
+            if (shouldAutoFit && !fitPendingRef.current) {
+              void (async () => {
+                const dims = await termRef.current?.measureFitDimensions()
+                if (!dims) return
+                if (cols !== dims.cols || rows !== dims.rows) {
+                  if (activeHandleRef.current === handle && subscribeSeqRef.current === seq) {
+                    void fitToPhoneCore(handle, rpcClient)
+                  }
                 }
-              }, 600)
+              })()
             }
           } else if (data.type === 'data') {
             termRef.current?.write(data.chunk as string)
@@ -344,7 +348,7 @@ export default function SessionScreen() {
         }
       })()
     },
-    [client, writeLines, fitToPhoneCore]
+    [client, formatLines, fitToPhoneCore]
   )
 
   const fetchTerminals = useCallback(
@@ -417,6 +421,47 @@ export default function SessionScreen() {
     }, 2000)
     return () => clearInterval(interval)
   }, [connState, fetchTerminals])
+
+  // Why: when navigating here from the "New Worktree" modal with an agent
+  // command, create the terminal from the session page (not the modal) so
+  // it goes through the normal mobile-created → auto-fit-to-phone flow.
+  // The modal can't do this because the terminal would start at the desktop's
+  // default geometry before the mobile WebView is mounted.
+  useEffect(() => {
+    if (
+      !agentCommand ||
+      !client ||
+      connState !== 'connected' ||
+      !terminalsLoaded ||
+      agentCommandConsumedRef.current
+    ) {
+      return
+    }
+    agentCommandConsumedRef.current = true
+
+    void (async () => {
+      try {
+        const response = await client.sendRequest('terminal.create', {
+          worktree: `id:${worktreeId}`,
+          command: agentCommand
+        })
+        if (response.ok) {
+          const result = (response as RpcSuccess).result as TerminalCreateResult
+          const created = result.terminal
+          mobileCreatedHandlesRef.current.add(created.handle)
+          activeHandleRef.current = created.handle
+          setActiveHandle(created.handle)
+          setTerminals((prev) => [
+            ...prev,
+            { handle: created.handle, title: created.title || 'Terminal', isActive: true }
+          ])
+          subscribeToTerminal(created.handle)
+        }
+      } catch {
+        // Agent terminal creation failed — user can create manually via +
+      }
+    })()
+  }, [agentCommand, client, connState, terminalsLoaded, worktreeId, subscribeToTerminal])
 
   const switchTab = useCallback(
     (handle: string) => {
@@ -600,7 +645,10 @@ export default function SessionScreen() {
                   key={t.handle}
                   style={[styles.tab, t.handle === activeHandle && styles.tabActive]}
                   onPress={() => switchTab(t.handle)}
-                  onLongPress={() => setActionTarget(t)}
+                  onLongPress={() => {
+                    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+                    setActionTarget(t)
+                  }}
                   delayLongPress={400}
                 >
                   <Text
@@ -699,7 +747,7 @@ export default function SessionScreen() {
           onPress={() => void handleSend()}
           accessibilityLabel="Send command"
         >
-          <ArrowUp size={18} color="#fff" strokeWidth={2.5} />
+          <ArrowUp size={18} color={colors.textSecondary} strokeWidth={2.5} />
         </Pressable>
       </View>
 
@@ -949,7 +997,7 @@ const styles = StyleSheet.create({
     marginRight: spacing.sm
   },
   sendButton: {
-    backgroundColor: colors.accentBlue,
+    backgroundColor: colors.bgRaised,
     width: 34,
     height: 34,
     borderRadius: 17,

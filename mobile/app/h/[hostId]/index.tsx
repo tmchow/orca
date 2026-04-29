@@ -10,6 +10,7 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import * as Haptics from 'expo-haptics'
 import {
   Search,
   X,
@@ -19,12 +20,16 @@ import {
   SlidersHorizontal,
   Layers,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  ChevronLeft,
+  Plus,
+  Moon
 } from 'lucide-react-native'
 import { connect, type RpcClient } from '../../../src/transport/rpc-client'
 import { loadHosts, updateLastConnected, removeHost } from '../../../src/transport/host-store'
 import type { ConnectionState, RpcSuccess } from '../../../src/transport/types'
 import { StatusDot } from '../../../src/components/StatusDot'
+import { NewWorktreeModal } from '../../../src/components/NewWorktreeModal'
 import { AgentSpinner } from '../../../src/components/AgentSpinner'
 import { PickerModal, type PickerOption } from '../../../src/components/PickerModal'
 import { ActionSheetModal } from '../../../src/components/ActionSheetModal'
@@ -236,6 +241,7 @@ export default function HostScreen() {
   const [actionTarget, setActionTarget] = useState<Worktree | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<Worktree | null>(null)
   const [confirmRemoveHost, setConfirmRemoveHost] = useState(false)
+  const [showNewWorktree, setShowNewWorktree] = useState(false)
 
   // Persisted pin state
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set())
@@ -435,13 +441,18 @@ export default function HostScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.topChrome}>
         <View style={styles.statusBar}>
+          <Pressable style={styles.backButton} onPress={() => router.back()}>
+            <ChevronLeft size={22} color={colors.textPrimary} />
+          </Pressable>
           <View style={styles.hostIdentity}>
             <StatusDot state={connState} />
             <Text style={styles.hostNameText} numberOfLines={1}>
               {hostName || 'Host'}
             </Text>
           </View>
-          <Text style={styles.statusText}>{STATUS_LABELS[connState]}</Text>
+          {connState !== 'connected' && (
+            <Text style={styles.statusText}>{STATUS_LABELS[connState]}</Text>
+          )}
         </View>
 
         {/* Filter/sort/group toolbar */}
@@ -475,6 +486,17 @@ export default function HostScreen() {
           </Pressable>
 
           <View style={styles.toolbarSpacer} />
+
+          <Pressable
+            style={styles.newButton}
+            onPress={() => setShowNewWorktree(true)}
+            disabled={connState !== 'connected'}
+          >
+            <Plus
+              size={16}
+              color={connState === 'connected' ? colors.textPrimary : colors.textMuted}
+            />
+          </Pressable>
 
           <Pressable style={styles.searchToggle} onPress={() => setShowSearch((s) => !s)}>
             {showSearch ? (
@@ -583,7 +605,10 @@ export default function HostScreen() {
               style={({ pressed }) => [styles.worktreeRow, pressed && styles.worktreeRowPressed]}
               disabled={isReadOnly}
               onPress={() => openWorktreeSession(item)}
-              onLongPress={() => setActionTarget(item)}
+              onLongPress={() => {
+                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+                setActionTarget(item)
+              }}
               delayLongPress={400}
             >
               {/* Left indicator */}
@@ -669,6 +694,17 @@ export default function HostScreen() {
           actionTarget
             ? [
                 {
+                  label: 'Sleep',
+                  icon: Moon,
+                  onPress: () => {
+                    if (client) {
+                      void client.sendRequest('worktree.sleep', {
+                        worktree: `id:${actionTarget.worktreeId}`
+                      })
+                    }
+                  }
+                },
+                {
                   label: pinnedIds.has(actionTarget.worktreeId) ? 'Unpin' : 'Pin',
                   onPress: () => togglePin(actionTarget.worktreeId)
                 },
@@ -723,6 +759,18 @@ export default function HostScreen() {
         ]}
         onClose={() => setConfirmRemoveHost(false)}
       />
+
+      <NewWorktreeModal
+        visible={showNewWorktree}
+        client={client}
+        onCreated={(worktreeId, worktreeName, agentCommand) => {
+          void fetchWorktrees()
+          const params = new URLSearchParams({ name: worktreeName })
+          if (agentCommand) params.set('agent', agentCommand)
+          router.push(`/h/${hostId}/session/${encodeURIComponent(worktreeId)}?${params.toString()}`)
+        }}
+        onClose={() => setShowNewWorktree(false)}
+      />
     </SafeAreaView>
   )
 }
@@ -751,6 +799,13 @@ const styles = StyleSheet.create({
     minHeight: 34,
     paddingTop: spacing.xs,
     paddingHorizontal: spacing.lg
+  },
+  backButton: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.xs
   },
   hostIdentity: {
     flex: 1,
@@ -841,6 +896,9 @@ const styles = StyleSheet.create({
   toolbarSpacer: {
     flex: 1
   },
+  newButton: {
+    padding: spacing.xs
+  },
   searchToggle: {
     padding: spacing.xs
   },
@@ -916,7 +974,7 @@ const styles = StyleSheet.create({
   indicatorCol: {
     width: 20,
     alignItems: 'center',
-    paddingTop: 3,
+    paddingTop: 6,
     marginRight: spacing.sm,
     gap: 4
   },

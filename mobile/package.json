@@ -17,6 +17,7 @@
     "expo-camera": "^55.0.16",
     "expo-constants": "^55.0.15",
     "expo-crypto": "^55.0.14",
+    "expo-haptics": "^55.0.14",
     "expo-linking": "^55.0.14",
     "expo-router": "^55.0.13",
     "expo-status-bar": "^55.0.5",
