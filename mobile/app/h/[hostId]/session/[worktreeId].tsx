@@ -69,11 +69,13 @@ const STATUS_LABELS: Record<ConnectionState, string> = {
 function TerminalPaneView({
   handle,
   active,
-  onRef
+  onRef,
+  onWebReady
 }: {
   handle: string
   active: boolean
   onRef: (handle: string, ref: TerminalWebViewHandle | null) => void
+  onWebReady: (handle: string) => void
 }) {
   const setRef = useCallback(
     (ref: TerminalWebViewHandle | null) => {
@@ -87,7 +89,11 @@ function TerminalPaneView({
       pointerEvents={active ? 'auto' : 'none'}
       style={[styles.terminalPane, !active && styles.terminalPaneHidden]}
     >
-      <TerminalWebView ref={setRef} style={styles.terminalWebView} />
+      <TerminalWebView
+        ref={setRef}
+        style={styles.terminalWebView}
+        onWebReady={() => onWebReady(handle)}
+      />
     </View>
   )
 }
@@ -541,6 +547,21 @@ export default function SessionScreen() {
     [subscribeToTerminal]
   )
 
+  const handleTerminalWebReady = useCallback(
+    (handle: string) => {
+      if (!initializedHandlesRef.current.has(handle)) {
+        return
+      }
+      // Why: the native WebView can reload independently of the session
+      // screen during Metro reloads or Android process churn. The old xterm
+      // buffer is gone, so force a fresh scrollback snapshot for this handle.
+      unsubscribeTerminal(handle)
+      initializedHandlesRef.current.delete(handle)
+      subscribeToTerminal(handle)
+    },
+    [subscribeToTerminal, unsubscribeTerminal]
+  )
+
   async function handleSend() {
     if (!client || !activeHandle || !input.trim()) return
 
@@ -771,6 +792,7 @@ export default function SessionScreen() {
               handle={terminal.handle}
               active={terminal.handle === activeHandle}
               onRef={setTerminalWebViewRef}
+              onWebReady={handleTerminalWebReady}
             />
           ))}
         </View>

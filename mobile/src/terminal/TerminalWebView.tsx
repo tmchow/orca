@@ -14,6 +14,7 @@ export type TerminalWebViewHandle = {
 
 type Props = {
   style?: StyleProp<ViewStyle>
+  onWebReady?: () => void
 }
 
 type TerminalMessage =
@@ -138,6 +139,11 @@ const XTERM_HTML = `<!DOCTYPE html>
   // managed by xterm, not a separate HTML gap. Never shrink below the
   // original init row count to avoid clipping active terminal content.
   function adjustRowsForViewport() {
+    // Why: mobile replays a live PTY snapshot and then applies live cursor-
+    // relative chunks from that same PTY. Resizing only the WebView xterm
+    // changes cursor coordinates and makes TUI repaint chunks duplicate or
+    // overlap existing frames. Keep xterm rows identical to the PTY.
+    return;
     if (!term || !term.element) return;
     // Why: active alternate-screen TUIs (Claude Code, vim, etc.) are exact
     // screen snapshots. Locally resizing the mobile xterm after replay can
@@ -495,7 +501,7 @@ const XTERM_HTML = `<!DOCTYPE html>
 </html>`
 
 export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function TerminalWebView(
-  { style },
+  { style, onWebReady },
   ref
 ) {
   const webViewRef = useRef<WebView>(null)
@@ -541,6 +547,7 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
 
       if (msg.type === 'web-ready') {
         isWebReadyRef.current = true
+        onWebReady?.()
         flushPendingMessages()
       } else if (msg.type === 'measure-result') {
         const resolve = measureResolveRef.current
@@ -552,7 +559,7 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
         }
       }
     },
-    [flushPendingMessages]
+    [flushPendingMessages, onWebReady]
   )
 
   const handleLoadStart = useCallback(() => {
