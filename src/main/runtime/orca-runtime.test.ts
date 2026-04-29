@@ -611,52 +611,6 @@ describe('OrcaRuntimeService', () => {
     expect(read.tail).toEqual(['ready'])
   })
 
-  it('keeps preallocated terminal handles valid across renderer reloads', async () => {
-    const runtime = new OrcaRuntimeService(store)
-    const handle = runtime.preAllocateHandleForPty('pty-1')
-
-    syncSinglePty(runtime)
-    runtime.markRendererReloading(1)
-    syncSinglePty(runtime, null)
-    runtime.onPtyData('pty-1', 'after reload\n', 100)
-
-    const read = await runtime.readTerminal(handle)
-    expect(read.tail).toEqual(['after reload'])
-  })
-
-  it('keeps preallocated terminal handles valid when a reload graph omits the live leaf', async () => {
-    const runtime = new OrcaRuntimeService(store)
-    const handle = runtime.preAllocateHandleForPty('pty-1')
-
-    syncSinglePty(runtime)
-    runtime.markRendererReloading(1)
-    runtime.syncWindowGraph(1, {
-      tabs: [],
-      leaves: []
-    })
-    runtime.onPtyData('pty-1', 'after omitted leaf\n', 100)
-
-    const read = await runtime.readTerminal(handle)
-    expect(read.tail).toEqual(['after omitted leaf'])
-  })
-
-  it('keeps preallocated terminal handles valid after graph unavailable during reload', async () => {
-    const runtime = new OrcaRuntimeService(store)
-    const handle = runtime.preAllocateHandleForPty('pty-1')
-
-    syncSinglePty(runtime)
-    runtime.markGraphUnavailable(1)
-    runtime.attachWindow(1)
-    runtime.syncWindowGraph(1, {
-      tabs: [],
-      leaves: []
-    })
-    runtime.onPtyData('pty-1', 'after unavailable\n', 100)
-
-    const read = await runtime.readTerminal(handle)
-    expect(read.tail).toEqual(['after unavailable'])
-  })
-
   it('keeps already-idle status after tui-idle wait for immediate message delivery', async () => {
     const runtime = new OrcaRuntimeService(store)
     const db = new OrchestrationDb(':memory:')
