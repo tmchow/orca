@@ -8,8 +8,7 @@ import {
   StyleSheet,
   Platform,
   ActivityIndicator,
-  Image,
-  FlatList
+  Image
 } from 'react-native'
 import { ChevronDown, ChevronUp, Check, Terminal } from 'lucide-react-native'
 import Svg, { Path, G } from 'react-native-svg'
@@ -215,14 +214,11 @@ function PickerListModal<T extends { id: string; label: string }>({
         <Text style={styles.pickerTitle}>{title}</Text>
       </View>
       <View style={styles.pickerGroup}>
-        <FlatList
-          data={items}
-          keyExtractor={(item) => item.id}
-          style={styles.pickerList}
-          ItemSeparatorComponent={() => <View style={styles.pickerSeparator} />}
-          renderItem={({ item }) => {
-            const selected = item.id === selectedId
-            return (
+        {items.map((item, index) => {
+          const selected = item.id === selectedId
+          return (
+            <View key={item.id}>
+              {index > 0 && <View style={styles.pickerSeparator} />}
               <Pressable
                 style={({ pressed }) => [styles.pickerItem, pressed && styles.pickerItemPressed]}
                 onPress={() => {
@@ -239,9 +235,9 @@ function PickerListModal<T extends { id: string; label: string }>({
                 </Text>
                 {selected && <Check size={14} color={colors.textPrimary} />}
               </Pressable>
-            )
-          }}
-        />
+            </View>
+          )
+        })}
       </View>
     </BottomDrawer>
   )

@@ -1,5 +1,14 @@
 import { type ReactNode, useCallback, useEffect } from 'react'
-import { Modal, View, Pressable, StyleSheet, Platform, useWindowDimensions } from 'react-native'
+import {
+  Modal,
+  View,
+  Pressable,
+  StyleSheet,
+  Platform,
+  useWindowDimensions,
+  ScrollView,
+  Keyboard
+} from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
 import Animated, {
@@ -29,6 +38,7 @@ type Props = {
 export function BottomDrawer({ visible, onClose, children }: Props) {
   const translateY = useSharedValue(0)
   const backdropOpacity = useSharedValue(0)
+  const keyboardOffset = useSharedValue(0)
   const { height: screenHeight } = useWindowDimensions()
   const insets = useSafeAreaInsets()
 
@@ -38,6 +48,31 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
       backdropOpacity.value = withTiming(1, { duration: 200 })
     }
   }, [visible])
+
+  // Why: KeyboardAvoidingView and useAnimatedKeyboard are both unreliable
+  // inside Modal (iOS ignores KAV; Android needs adjustNothing for
+  // useAnimatedKeyboard). Keyboard event listeners work on both platforms
+  // and give us the exact height to shift the drawer by.
+  useEffect(() => {
+    if (!visible) return
+
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide'
+
+    const onShow = Keyboard.addListener(showEvent, (e) => {
+      const height = e.endCoordinates.height - insets.bottom
+      keyboardOffset.value = withTiming(Math.max(height, 0), { duration: e.duration || 250 })
+    })
+    const onHide = Keyboard.addListener(hideEvent, (e) => {
+      keyboardOffset.value = withTiming(0, { duration: e.duration || 250 })
+    })
+
+    return () => {
+      onShow.remove()
+      onHide.remove()
+      keyboardOffset.value = 0
+    }
+  }, [visible, insets.bottom])
 
   const dismiss = useCallback(() => {
     onClose()
@@ -66,7 +101,7 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
     })
 
   const drawerStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }]
+    transform: [{ translateY: translateY.value - keyboardOffset.value }]
   }))
 
   const backdropStyle = useAnimatedStyle(() => ({
@@ -86,7 +121,13 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
               style={[styles.drawer, { paddingBottom: insets.bottom + spacing.lg }, drawerStyle]}
             >
               <View style={styles.handle} />
-              {children}
+              <ScrollView
+                bounces={false}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                {children}
+              </ScrollView>
               <View style={styles.bottomExtension} />
             </Animated.View>
           </GestureDetector>
@@ -135,10 +176,10 @@ const styles = StyleSheet.create({
   },
   bottomExtension: {
     position: 'absolute',
-    bottom: -100,
+    bottom: -500,
     left: 0,
     right: 0,
-    height: 100,
+    height: 500,
     backgroundColor: colors.bgBase
   }
 })

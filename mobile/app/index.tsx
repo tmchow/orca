@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react'
 import { View, Text, StyleSheet, Pressable, FlatList } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter, useFocusEffect } from 'expo-router'
-import { MoreHorizontal, QrCode, Server, Settings } from 'lucide-react-native'
+import { Monitor, MoreHorizontal, QrCode, Settings } from 'lucide-react-native'
 import { loadHosts, removeHost, renameHost } from '../src/transport/host-store'
 import { connect } from '../src/transport/rpc-client'
 import type { ConnectionState, HostProfile } from '../src/transport/types'
@@ -20,6 +20,15 @@ function endpointLabel(endpoint: string): string {
   } catch {
     return endpoint
   }
+}
+
+const STATUS_LABELS: Record<ConnectionState, string> = {
+  connected: 'Connected',
+  connecting: 'Connecting…',
+  disconnected: 'Disconnected',
+  reconnecting: 'Reconnecting…',
+  handshaking: 'Connecting…',
+  'auth-failed': 'Auth failed'
 }
 
 export default function HomeScreen() {
@@ -106,8 +115,8 @@ export default function HomeScreen() {
           contentContainerStyle={styles.list}
           ListHeaderComponent={
             <View style={styles.hero}>
-              <Text style={styles.heroTitle}>Desktops</Text>
-              <Text style={styles.heroSubtitle}>Continue where your agents are running.</Text>
+              <Text style={styles.heroTitle}>Paired Desktops</Text>
+              <Text style={styles.heroSubtitle}>Monitor workspaces and terminals remotely.</Text>
             </View>
           }
           ItemSeparatorComponent={() => <View style={styles.cardGap} />}
@@ -122,7 +131,7 @@ export default function HomeScreen() {
               delayLongPress={400}
             >
               <View style={styles.hostIcon}>
-                <Server size={18} color={colors.textPrimary} />
+                <Monitor size={18} color={colors.textPrimary} />
               </View>
               <View style={styles.hostMain}>
                 <View style={styles.hostTitleRow}>
@@ -131,8 +140,8 @@ export default function HomeScreen() {
                     {item.name}
                   </Text>
                 </View>
-                <Text style={styles.hostEndpoint} numberOfLines={1}>
-                  {endpointLabel(item.endpoint)}
+                <Text style={styles.hostStatus} numberOfLines={1}>
+                  {STATUS_LABELS[hostStates[item.id] ?? 'connecting']}
                 </Text>
               </View>
               <Pressable
@@ -147,7 +156,7 @@ export default function HomeScreen() {
           ListFooterComponent={
             <Pressable style={styles.pairCard} onPress={() => router.push('/pair-scan')}>
               <View style={styles.pairIcon}>
-                <QrCode size={18} color={colors.accentBlue} />
+                <QrCode size={18} color={colors.textSecondary} />
               </View>
               <View style={styles.pairTextBlock}>
                 <Text style={styles.pairTitle}>Pair another desktop</Text>
@@ -161,6 +170,7 @@ export default function HomeScreen() {
       <ActionSheetModal
         visible={actionTarget != null}
         title={actionTarget?.name}
+        message={actionTarget ? endpointLabel(actionTarget.endpoint) : undefined}
         actions={[
           {
             label: 'Rename',
@@ -288,15 +298,13 @@ const styles = StyleSheet.create({
   },
   heroTitle: {
     color: colors.textPrimary,
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: '800'
   },
   heroSubtitle: {
-    color: colors.textSecondary,
+    color: colors.textMuted,
     fontSize: typography.bodySize,
-    lineHeight: 20,
-    marginTop: spacing.xs,
-    maxWidth: 320
+    marginTop: spacing.xs
   },
   cardGap: {
     height: spacing.sm
@@ -309,9 +317,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     minHeight: 70,
     borderRadius: radii.row,
-    backgroundColor: colors.bgPanel,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle
+    backgroundColor: colors.bgPanel
   },
   hostCardPressed: {
     backgroundColor: colors.bgRaised
@@ -349,10 +355,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginLeft: spacing.xs
   },
-  hostEndpoint: {
-    color: colors.textSecondary,
+  hostStatus: {
+    color: colors.textMuted,
     fontSize: 13,
-    fontFamily: typography.monoFamily,
     marginTop: spacing.xs
   },
   pairCard: {
@@ -364,9 +369,7 @@ const styles = StyleSheet.create({
     paddingRight: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: radii.row,
-    backgroundColor: colors.bgBase,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle
+    backgroundColor: colors.bgPanel
   },
   pairIcon: {
     width: 44,
@@ -374,7 +377,7 @@ const styles = StyleSheet.create({
     borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.accentBlue + '18',
+    backgroundColor: colors.bgRaised,
     marginRight: spacing.md
   },
   pairTextBlock: {

@@ -47,7 +47,6 @@ export default function AboutScreen() {
           onPress={() => void Linking.openURL('https://onOrca.dev')}
         >
           <Globe size={16} color={colors.textSecondary} />
-          <Text style={styles.rowLabel}>Website</Text>
           <Text style={styles.rowValue}>onOrca.dev</Text>
         </Pressable>
         <View style={styles.separator} />
@@ -56,7 +55,6 @@ export default function AboutScreen() {
           onPress={() => void Linking.openURL('https://github.com/stablyai/orca')}
         >
           <GithubIcon />
-          <Text style={styles.rowLabel}>GitHub</Text>
           <Text style={styles.rowValue}>stablyai/orca</Text>
         </Pressable>
         <View style={styles.separator} />
@@ -65,7 +63,6 @@ export default function AboutScreen() {
           onPress={() => void Linking.openURL('https://x.com/orca_build')}
         >
           <XIcon />
-          <Text style={styles.rowLabel}>X</Text>
           <Text style={styles.rowValue}>@orca_build</Text>
         </Pressable>
       </View>
@@ -135,8 +132,10 @@ const styles = StyleSheet.create({
     color: colors.textPrimary
   },
   rowValue: {
+    flex: 1,
+    textAlign: 'right',
     fontSize: typography.bodySize,
-    color: colors.accentBlue
+    color: colors.textSecondary
   },
   separator: {
     height: StyleSheet.hairlineWidth,
