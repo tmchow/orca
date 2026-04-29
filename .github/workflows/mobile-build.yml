@@ -1,11 +1,9 @@
-name: Mobile Build
+name: Mobile Release
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'mobile/**'
+    tags:
+      - 'mobile-v*'
   workflow_dispatch:
 
 jobs:
@@ -42,5 +40,23 @@ jobs:
       - name: Expo prebuild
         run: npx expo prebuild --platform android --no-install
 
-      - name: Build Android debug APK
-        run: cd android && ./gradlew assembleDebug
+      - name: Build Android release APK
+        run: cd android && ./gradlew assembleRelease
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-mobile-apk
+          path: mobile/android/app/build/outputs/apk/release/*.apk
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/mobile-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Orca Mobile $tag" \
+            --generate-notes \
+            android/app/build/outputs/apk/release/*.apk
