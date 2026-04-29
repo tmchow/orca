@@ -11,7 +11,7 @@ import {
   Image,
   FlatList
 } from 'react-native'
-import { ChevronDown, Check, Terminal, X } from 'lucide-react-native'
+import { ChevronDown, Check, Terminal } from 'lucide-react-native'
 import Svg, { Path, G } from 'react-native-svg'
 import type { RpcClient } from '../transport/rpc-client'
 import type { RpcSuccess } from '../transport/types'
@@ -210,38 +210,44 @@ function PickerListModal<T extends { id: string; label: string }>({
 }) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <View style={styles.pickerCard} onStartShouldSetResponder={() => true}>
-          <Text style={styles.pickerTitle}>{title}</Text>
-          <FlatList
-            data={items}
-            keyExtractor={(item) => item.id}
-            style={styles.pickerList}
-            renderItem={({ item }) => {
-              const selected = item.id === selectedId
-              return (
-                <Pressable
-                  style={[styles.pickerItem, selected && styles.pickerItemSelected]}
-                  onPress={() => {
-                    onSelect(item)
-                    onClose()
-                  }}
-                >
-                  {renderIcon?.(item)}
-                  <Text
-                    style={[styles.pickerItemText, selected && styles.pickerItemTextSelected]}
-                    numberOfLines={1}
+      <Pressable style={styles.pickerBackdrop} onPress={onClose}>
+        <View style={styles.pickerDrawer} onStartShouldSetResponder={() => true}>
+          <View style={styles.pickerHandle} />
+          <View style={styles.pickerHeader}>
+            <Text style={styles.pickerTitle}>{title}</Text>
+          </View>
+          <View style={styles.pickerGroup}>
+            <FlatList
+              data={items}
+              keyExtractor={(item) => item.id}
+              style={styles.pickerList}
+              ItemSeparatorComponent={() => <View style={styles.pickerSeparator} />}
+              renderItem={({ item }) => {
+                const selected = item.id === selectedId
+                return (
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.pickerItem,
+                      pressed && styles.pickerItemPressed
+                    ]}
+                    onPress={() => {
+                      onSelect(item)
+                      onClose()
+                    }}
                   >
-                    {item.label}
-                  </Text>
-                  {selected && <Check size={14} color={colors.textPrimary} />}
-                </Pressable>
-              )
-            }}
-          />
-          <Pressable style={styles.pickerCancel} onPress={onClose}>
-            <Text style={styles.pickerCancelText}>Cancel</Text>
-          </Pressable>
+                    {renderIcon?.(item)}
+                    <Text
+                      style={[styles.pickerItemText, selected && styles.pickerItemTextSelected]}
+                      numberOfLines={1}
+                    >
+                      {item.label}
+                    </Text>
+                    {selected && <Check size={14} color={colors.textPrimary} />}
+                  </Pressable>
+                )
+              }}
+            />
+          </View>
         </View>
       </Pressable>
     </Modal>
@@ -335,15 +341,11 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
     <>
       <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
         <Pressable style={styles.backdrop} onPress={onClose}>
-          <View style={styles.card} onStartShouldSetResponder={() => true}>
+          <View style={styles.drawer} onStartShouldSetResponder={() => true}>
+            <View style={styles.handle} />
             <View style={styles.header}>
-              <View>
-                <Text style={styles.title}>New Worktree</Text>
-                <Text style={styles.subtitle}>Pick a repository and agent</Text>
-              </View>
-              <Pressable style={styles.closeButton} onPress={onClose} hitSlop={8}>
-                <X size={18} color={colors.textSecondary} />
-              </Pressable>
+              <Text style={styles.title}>New Worktree</Text>
+              <Text style={styles.subtitle}>Pick a repository and agent</Text>
             </View>
 
             {loading ? (
@@ -458,45 +460,48 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: spacing.xl
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end'
   },
-  card: {
-    width: '100%',
-    maxWidth: 340,
-    backgroundColor: colors.bgPanel,
-    borderRadius: 14,
-    padding: spacing.xl,
+  drawer: {
+    backgroundColor: colors.bgBase,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.xl + spacing.md,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 12
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 10
       },
       android: { elevation: 8 }
     })
   },
+  handle: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.textMuted,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+    opacity: 0.4
+  },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: spacing.lg
+    paddingHorizontal: spacing.xs,
+    marginBottom: spacing.md
   },
   title: {
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '600',
     color: colors.textPrimary
   },
   subtitle: {
-    fontSize: 12,
-    color: colors.textSecondary,
+    fontSize: 13,
+    color: colors.textMuted,
     marginTop: 2
-  },
-  closeButton: {
-    padding: spacing.xs
   },
   loadingContainer: {
     paddingVertical: spacing.xl,
@@ -592,32 +597,56 @@ const styles = StyleSheet.create({
   },
 
   // Picker sub-modal styles
-  pickerCard: {
-    width: '100%',
-    maxWidth: 320,
+  pickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end'
+  },
+  pickerDrawer: {
+    backgroundColor: colors.bgBase,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.xl + spacing.md,
     maxHeight: '70%',
-    backgroundColor: colors.bgPanel,
-    borderRadius: 14,
-    overflow: 'hidden',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 12
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 10
       },
       android: { elevation: 8 }
     })
   },
-  pickerTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: colors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
+  pickerHandle: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.textMuted,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+    opacity: 0.4
+  },
+  pickerHeader: {
+    paddingHorizontal: spacing.xs,
     paddingBottom: spacing.sm
+  },
+  pickerTitle: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.textMuted
+  },
+  pickerGroup: {
+    backgroundColor: colors.bgPanel,
+    borderRadius: 12,
+    overflow: 'hidden'
+  },
+  pickerSeparator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.borderSubtle,
+    marginHorizontal: spacing.md
   },
   pickerList: {
     flexGrow: 0
@@ -626,10 +655,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    paddingVertical: spacing.sm + 2,
-    paddingHorizontal: spacing.lg
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md + 2
   },
-  pickerItemSelected: {
+  pickerItemPressed: {
     backgroundColor: colors.bgRaised
   },
   pickerItemText: {
@@ -639,17 +668,5 @@ const styles = StyleSheet.create({
   },
   pickerItemTextSelected: {
     fontWeight: '600'
-  },
-  pickerCancel: {
-    alignItems: 'center',
-    paddingVertical: spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: colors.borderSubtle,
-    marginTop: spacing.xs
-  },
-  pickerCancelText: {
-    color: colors.textSecondary,
-    fontSize: typography.bodySize,
-    fontWeight: '500'
   }
 })

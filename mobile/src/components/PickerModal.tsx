@@ -28,37 +28,39 @@ export function PickerModal<T extends string = string>({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.card} onPress={() => {}}>
-          <Text style={styles.title}>{title}</Text>
-          <View style={styles.options}>
-            {options.map((opt) => {
+        <View style={styles.drawer}>
+          <View style={styles.handle} />
+
+          <View style={styles.header}>
+            <Text style={styles.title}>{title}</Text>
+          </View>
+
+          <View style={styles.group}>
+            {options.map((opt, i) => {
               const isSelected = opt.value === selected
               return (
-                <Pressable
-                  key={opt.value}
-                  style={[styles.option, isSelected && styles.optionSelected]}
-                  onPress={() => {
-                    onSelect(opt.value)
-                    onClose()
-                  }}
-                >
-                  <View style={styles.optionContent}>
-                    <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
-                      {opt.label}
-                    </Text>
-                    {opt.subtitle ? (
-                      <Text style={styles.optionSubtitle}>{opt.subtitle}</Text>
-                    ) : null}
-                  </View>
-                  {isSelected && <Check size={16} color={colors.textPrimary} />}
-                </Pressable>
+                <View key={opt.value}>
+                  {i > 0 && <View style={styles.separator} />}
+                  <Pressable
+                    style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                    onPress={() => {
+                      onSelect(opt.value)
+                      onClose()
+                    }}
+                  >
+                    <View style={styles.rowContent}>
+                      <Text style={[styles.rowLabel, isSelected && styles.rowLabelSelected]}>
+                        {opt.label}
+                      </Text>
+                      {opt.subtitle ? <Text style={styles.rowSubtitle}>{opt.subtitle}</Text> : null}
+                    </View>
+                    {isSelected && <Check size={16} color={colors.textPrimary} />}
+                  </Pressable>
+                </View>
               )
             })}
           </View>
-          <Pressable style={styles.closeButton} onPress={onClose}>
-            <Text style={styles.closeText}>Cancel</Text>
-          </Pressable>
-        </Pressable>
+        </View>
       </Pressable>
     </Modal>
   )
@@ -67,75 +69,76 @@ export function PickerModal<T extends string = string>({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: spacing.xl
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end'
   },
-  card: {
-    width: '100%',
-    maxWidth: 320,
-    backgroundColor: colors.bgPanel,
-    borderRadius: 14,
-    overflow: 'hidden',
+  drawer: {
+    backgroundColor: colors.bgBase,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.xl + spacing.md,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 12
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 10
       },
       android: { elevation: 8 }
     })
   },
-  title: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: colors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
+  handle: {
+    alignSelf: 'center',
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.textMuted,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+    opacity: 0.4
+  },
+  header: {
+    paddingHorizontal: spacing.xs,
     paddingBottom: spacing.sm
   },
-  options: {
-    paddingBottom: spacing.xs
+  title: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.textMuted
   },
-  option: {
+  group: {
+    backgroundColor: colors.bgPanel,
+    borderRadius: 12,
+    overflow: 'hidden'
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.borderSubtle,
+    marginHorizontal: spacing.md
+  },
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: spacing.sm + 2,
-    paddingHorizontal: spacing.lg
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md + 2
   },
-  optionSelected: {
+  rowPressed: {
     backgroundColor: colors.bgRaised
   },
-  optionContent: {
+  rowContent: {
     flex: 1
   },
-  optionLabel: {
+  rowLabel: {
     fontSize: typography.bodySize,
     color: colors.textPrimary
   },
-  optionLabelSelected: {
-    color: colors.textPrimary,
+  rowLabelSelected: {
     fontWeight: '600'
   },
-  optionSubtitle: {
+  rowSubtitle: {
     fontSize: 11,
     color: colors.textMuted,
     marginTop: 1
-  },
-  closeButton: {
-    alignItems: 'center',
-    paddingVertical: spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: colors.borderSubtle,
-    marginTop: spacing.xs
-  },
-  closeText: {
-    color: colors.textSecondary,
-    fontSize: typography.bodySize,
-    fontWeight: '500'
   }
 })

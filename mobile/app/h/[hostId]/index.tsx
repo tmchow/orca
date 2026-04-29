@@ -339,13 +339,25 @@ export default function HostScreen() {
   const handleDeleteWorktree = useCallback(
     async (item: Worktree) => {
       if (!client) return
+
+      const removeFromList = (list: Worktree[]) =>
+        list.filter((w) => w.worktreeId !== item.worktreeId)
+      setWorktrees(removeFromList)
+      setLastKnownWorktrees(removeFromList)
+
       try {
-        await client.sendRequest('worktree.remove', {
-          worktree: `id:${item.worktreeId}`
+        const response = await client.sendRequest('worktree.rm', {
+          worktree: `id:${item.worktreeId}`,
+          force: true
         })
+        if (!response.ok) {
+          setWorktrees((prev) => [...prev, item])
+          setLastKnownWorktrees((prev) => [...prev, item])
+        }
         void fetchWorktrees()
       } catch {
-        // Deletion failed — will be visible when list doesn't change
+        setWorktrees((prev) => [...prev, item])
+        setLastKnownWorktrees((prev) => [...prev, item])
       }
     },
     [client, fetchWorktrees]
@@ -687,7 +699,7 @@ export default function HostScreen() {
 
       {/* Worktree long-press action sheet */}
       <ActionSheetModal
-        visible={actionTarget != null}
+        visible={actionTarget != null && confirmDelete == null}
         title={actionTarget ? actionTarget.displayName || actionTarget.repo : undefined}
         message={actionTarget?.branch}
         actions={
@@ -737,12 +749,16 @@ export default function HostScreen() {
                   onPress: () => {
                     void handleDeleteWorktree(confirmDelete)
                     setConfirmDelete(null)
+                    setActionTarget(null)
                   }
                 }
               ]
             : []
         }
-        onClose={() => setConfirmDelete(null)}
+        onClose={() => {
+          setConfirmDelete(null)
+          setActionTarget(null)
+        }}
       />
 
       {/* Host remove confirmation */}

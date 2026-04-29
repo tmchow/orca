@@ -12,6 +12,7 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { ArrowUp, ChevronLeft, Monitor, Plus, Smartphone } from 'lucide-react-native'
 import { connect, type RpcClient } from '../../../../src/transport/rpc-client'
 import { loadHosts } from '../../../../src/transport/host-store'
@@ -24,6 +25,11 @@ import {
 import { StatusDot } from '../../../../src/components/StatusDot'
 import { ActionSheetModal } from '../../../../src/components/ActionSheetModal'
 import { TextInputModal } from '../../../../src/components/TextInputModal'
+import {
+  CustomKeyModal,
+  loadCustomKeys,
+  type CustomKey
+} from '../../../../src/components/CustomKeyModal'
 import { colors, spacing, radii, typography } from '../../../../src/theme/mobile-theme'
 
 type Terminal = {
@@ -49,7 +55,14 @@ const ACCESSORY_KEYS: AccessoryKey[] = [
   { label: '←', bytes: '\x1b[D' },
   { label: '→', bytes: '\x1b[C' },
   { label: 'Ctrl+C', bytes: '\x03', accessibilityLabel: 'Interrupt terminal' },
-  { label: 'Ctrl+D', bytes: '\x04', accessibilityLabel: 'Send EOF' }
+  { label: 'Ctrl+D', bytes: '\x04', accessibilityLabel: 'Send EOF' },
+  { label: 'Ctrl+L', bytes: '\x0c', accessibilityLabel: 'Clear screen' },
+  { label: 'Ctrl+Z', bytes: '\x1a', accessibilityLabel: 'Suspend process' },
+  { label: 'Ctrl+R', bytes: '\x12', accessibilityLabel: 'Reverse search' },
+  { label: 'Ctrl+A', bytes: '\x01', accessibilityLabel: 'Start of line' },
+  { label: 'Ctrl+E', bytes: '\x05', accessibilityLabel: 'End of line' },
+  { label: 'Ctrl+W', bytes: '\x17', accessibilityLabel: 'Delete word backward' },
+  { label: 'Ctrl+U', bytes: '\x15', accessibilityLabel: 'Clear line before cursor' }
 ]
 
 // Why: persists fitted-handle sets across component remounts (e.g. navigating
@@ -121,6 +134,9 @@ export default function SessionScreen() {
   const [createError, setCreateError] = useState('')
   const [actionTarget, setActionTarget] = useState<Terminal | null>(null)
   const [renameTarget, setRenameTarget] = useState<Terminal | null>(null)
+  const [customKeys, setCustomKeys] = useState<CustomKey[]>([])
+  const [showCustomKeyModal, setShowCustomKeyModal] = useState(false)
+  const [deleteKeyTarget, setDeleteKeyTarget] = useState<CustomKey | null>(null)
   const [fittedHandles, setFittedHandles] = useState<Set<string>>(
     () => persistedFittedHandles.get(worktreeId!) ?? new Set()
   )
@@ -320,6 +336,19 @@ export default function SessionScreen() {
       rpcClient?.close()
     }
   }, [clearTerminalCache, hostId])
+
+  useEffect(() => {
+    void loadCustomKeys().then(setCustomKeys)
+  }, [])
+
+  const handleDeleteCustomKey = useCallback(
+    async (key: CustomKey) => {
+      const updated = customKeys.filter((k) => k.id !== key.id)
+      setCustomKeys(updated)
+      await AsyncStorage.setItem('orca:custom-accessory-keys', JSON.stringify(updated))
+    },
+    [customKeys]
+  )
 
   useEffect(() => {
     clearTerminalCache()
@@ -563,7 +592,7 @@ export default function SessionScreen() {
   )
 
   async function handleSend() {
-    if (!client || !activeHandle || !input.trim()) return
+    if (!client || !activeHandle) return
 
     const text = input
     setInput('')
@@ -805,6 +834,32 @@ export default function SessionScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.accessoryContent}
         >
+          <Pressable
+            style={({ pressed }) => [
+              styles.accessoryKey,
+              pressed && styles.accessoryKeyPressed,
+              (!canSend || fitPending) && styles.accessoryKeyDisabled
+            ]}
+            disabled={!canSend || fitPending}
+            onPress={() => {
+              if (activeHandle && fittedHandles.has(activeHandle)) {
+                void handleRestoreDesktopSize()
+              } else {
+                void handleFitToPhone()
+              }
+            }}
+            accessibilityLabel={
+              activeHandle && fittedHandles.has(activeHandle)
+                ? 'Restore desktop size'
+                : 'Fit to phone'
+            }
+          >
+            {activeHandle && fittedHandles.has(activeHandle) ? (
+              <Monitor size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
+            ) : (
+              <Smartphone size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
+            )}
+          </Pressable>
           {ACCESSORY_KEYS.map((key) => (
             <Pressable
               key={key.label}
@@ -822,6 +877,36 @@ export default function SessionScreen() {
               </Text>
             </Pressable>
           ))}
+          {customKeys.map((key) => (
+            <Pressable
+              key={key.id}
+              style={({ pressed }) => [
+                styles.accessoryKey,
+                styles.customAccessoryKey,
+                pressed && styles.accessoryKeyPressed,
+                !canSend && styles.accessoryKeyDisabled
+              ]}
+              disabled={!canSend}
+              onPress={() => void handleAccessoryKey(key.bytes)}
+              onLongPress={() => {
+                triggerMediumImpact()
+                setDeleteKeyTarget(key)
+              }}
+              delayLongPress={400}
+              accessibilityLabel={`Send ${key.label}`}
+            >
+              <Text style={[styles.accessoryKeyText, !canSend && styles.accessoryKeyTextDisabled]}>
+                {key.label}
+              </Text>
+            </Pressable>
+          ))}
+          <Pressable
+            style={({ pressed }) => [styles.accessoryKey, pressed && styles.accessoryKeyPressed]}
+            onPress={() => setShowCustomKeyModal(true)}
+            accessibilityLabel="Add custom shortcut"
+          >
+            <Plus size={14} color={colors.textSecondary} strokeWidth={2.2} />
+          </Pressable>
         </ScrollView>
       </View>
 
@@ -905,6 +990,29 @@ export default function SessionScreen() {
         placeholder="Terminal name"
         onSubmit={(value) => void handleRenameTerminal(value)}
         onCancel={() => setRenameTarget(null)}
+      />
+      <CustomKeyModal
+        visible={showCustomKeyModal}
+        onClose={() => setShowCustomKeyModal(false)}
+        onKeysChanged={setCustomKeys}
+      />
+      <ActionSheetModal
+        visible={deleteKeyTarget != null}
+        title={deleteKeyTarget?.label ?? 'Shortcut'}
+        message="Remove this custom shortcut?"
+        actions={[
+          {
+            label: 'Remove',
+            destructive: true,
+            onPress: () => {
+              if (deleteKeyTarget) {
+                void handleDeleteCustomKey(deleteKeyTarget)
+              }
+              setDeleteKeyTarget(null)
+            }
+          }
+        ]}
+        onClose={() => setDeleteKeyTarget(null)}
       />
     </KeyboardAvoidingView>
   )
@@ -1072,6 +1180,10 @@ const styles = StyleSheet.create({
   },
   accessoryKeyPressed: {
     backgroundColor: colors.borderSubtle
+  },
+  customAccessoryKey: {
+    borderWidth: 1,
+    borderColor: colors.borderSubtle
   },
   accessoryKeyDisabled: {
     opacity: 0.35
