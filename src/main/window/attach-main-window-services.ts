@@ -200,76 +200,42 @@ function registerRuntimeWindowLifecycle(
   runtime: OrcaRuntimeService
 ): void {
   runtime.attachWindow(mainWindow.id)
+  const send = (channel: string, data?: unknown): void => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(channel, data)
+    }
+  }
   runtime.setNotifier({
-    worktreesChanged: (repoId) => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('worktrees:changed', { repoId })
-      }
-    },
-    reposChanged: () => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('repos:changed')
-      }
-    },
+    worktreesChanged: (repoId) => send('worktrees:changed', { repoId }),
+    reposChanged: () => send('repos:changed'),
     activateWorktree: (
       repoId,
       worktreeId,
       setup?: CreateWorktreeResult['setup'],
       startup?: WorktreeStartupLaunch
     ) => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('ui:activateWorktree', {
-          repoId,
-          worktreeId,
-          ...(setup ? { setup } : {}),
-          ...(startup ? { startup } : {})
-        })
-      }
+      send('ui:activateWorktree', {
+        repoId,
+        worktreeId,
+        ...(setup ? { setup } : {}),
+        ...(startup ? { startup } : {})
+      })
     },
-    createTerminal: (worktreeId, opts) => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('ui:createTerminal', {
-          worktreeId,
-          command: opts.command,
-          title: opts.title
-        })
-      }
-    },
+    createTerminal: (worktreeId, opts) =>
+      send('ui:createTerminal', { worktreeId, command: opts.command, title: opts.title }),
     splitTerminal: (tabId, paneRuntimeId, opts) => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('ui:splitTerminal', {
-          tabId,
-          paneRuntimeId,
-          direction: opts.direction,
-          command: opts.command
-        })
-      }
+      send('ui:splitTerminal', {
+        tabId,
+        paneRuntimeId,
+        direction: opts.direction,
+        command: opts.command
+      })
     },
-    renameTerminal: (tabId, title) => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('ui:renameTerminal', { tabId, title })
-      }
-    },
-    focusTerminal: (tabId, worktreeId) => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('ui:focusTerminal', { tabId, worktreeId })
-      }
-    },
-    closeTerminal: (tabId, paneRuntimeId) => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('ui:closeTerminal', { tabId, paneRuntimeId })
-      }
-    },
-    terminalFitOverrideChanged: (ptyId, mode, cols, rows) => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('runtime:terminalFitOverrideChanged', {
-          ptyId,
-          mode,
-          cols,
-          rows
-        })
-      }
-    }
+    renameTerminal: (tabId, title) => send('ui:renameTerminal', { tabId, title }),
+    focusTerminal: (tabId, worktreeId) => send('ui:focusTerminal', { tabId, worktreeId }),
+    closeTerminal: (tabId, paneRuntimeId) => send('ui:closeTerminal', { tabId, paneRuntimeId }),
+    terminalFitOverrideChanged: (ptyId, mode, cols, rows) =>
+      send('runtime:terminalFitOverrideChanged', { ptyId, mode, cols, rows })
   })
   // Why: the runtime must fail closed while the renderer graph is being torn
   // down or rebuilt, otherwise future CLI calls could act on stale terminal
