@@ -24,8 +24,8 @@ describe('E2EE integration (simulated mobile ↔ desktop)', () => {
     close: ReturnType<typeof vi.fn>
   }
   let channel: E2EEChannel
-  let onReady: ReturnType<typeof vi.fn>
-  let onError: ReturnType<typeof vi.fn>
+  let onReady: (channel: E2EEChannel) => void
+  let onError: (code: number, reason: string) => void
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -39,8 +39,8 @@ describe('E2EE integration (simulated mobile ↔ desktop)', () => {
       send: vi.fn((data: string) => wsSent.push(data)),
       close: vi.fn()
     }
-    onReady = vi.fn()
-    onError = vi.fn()
+    onReady = vi.fn() as unknown as (channel: E2EEChannel) => void
+    onError = vi.fn() as unknown as (code: number, reason: string) => void
 
     channel = new E2EEChannel(mockWs as unknown as WebSocket, {
       serverSecretKey: serverKeys.secretKey,

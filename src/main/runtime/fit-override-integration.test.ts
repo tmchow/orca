@@ -77,6 +77,7 @@ describe('fit override integration', () => {
     runtime.setPtyController({
       write: () => true,
       kill: () => true,
+      getForegroundProcess: async () => null,
       resize: (ptyId, cols, rows) => {
         currentSize.cols = cols
         currentSize.rows = rows
@@ -180,6 +181,7 @@ describe('fit override integration', () => {
     runtime.setPtyController({
       write: () => true,
       kill: () => true,
+      getForegroundProcess: async () => null,
       resize: (ptyId, cols, rows) => {
         ptySize = { cols, rows }
         resizes.push(`${ptyId}:${cols}x${rows}`)
@@ -240,6 +242,7 @@ describe('fit override integration', () => {
     runtime.setPtyController({
       write: () => true,
       kill: () => true,
+      getForegroundProcess: async () => null,
       resize: (_ptyId, cols, rows) => {
         ptySize = { cols, rows }
         return true

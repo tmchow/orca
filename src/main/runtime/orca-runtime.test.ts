@@ -384,6 +384,7 @@ describe('OrcaRuntimeService', () => {
     runtime.setPtyController({
       write: () => true,
       kill: () => true,
+      getForegroundProcess: async () => null,
       getSize: () => ({ cols: 100, rows: 30 }),
       serializeBuffer: vi.fn().mockResolvedValue(null)
     })
@@ -401,6 +402,7 @@ describe('OrcaRuntimeService', () => {
     runtime.setPtyController({
       write: () => true,
       kill: () => true,
+      getForegroundProcess: async () => null,
       getSize: () => ({ cols: 100, rows: 30 }),
       serializeBuffer: vi.fn().mockResolvedValue({
         data: 'renderer scrollback that should not win',
@@ -421,6 +423,7 @@ describe('OrcaRuntimeService', () => {
     runtime.setPtyController({
       write: () => true,
       kill: () => true,
+      getForegroundProcess: async () => null,
       listProcesses: vi.fn().mockResolvedValue([
         { id: 'pty-1', cwd: '/tmp/worktree-a', title: 'setup' },
         { id: 'pty-2', cwd: '/tmp/worktree-a', title: 'Claude Code' }
@@ -1019,6 +1022,7 @@ describe('OrcaRuntimeService', () => {
     runtime.setPtyController({
       write: () => true,
       kill: () => true,
+      getForegroundProcess: async () => null,
       listProcesses: async () => [
         {
           id: 'repo-1::/tmp/worktree-a@@abc12345',
@@ -1045,6 +1049,7 @@ describe('OrcaRuntimeService', () => {
         return true
       },
       kill: () => true,
+      getForegroundProcess: async () => null,
       listProcesses: async () => [
         {
           id: 'pty-orphan',
@@ -1283,7 +1288,8 @@ describe('OrcaRuntimeService', () => {
       splitTerminal: vi.fn(),
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
-      closeTerminal: vi.fn()
+      closeTerminal: vi.fn(),
+      terminalFitOverrideChanged: vi.fn()
     })
     runtime.attachWindow(TEST_WINDOW_ID)
     runtime.syncWindowGraph(TEST_WINDOW_ID, { tabs: [], leaves: [] })
@@ -1307,7 +1313,8 @@ describe('OrcaRuntimeService', () => {
       splitTerminal: vi.fn(),
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
-      closeTerminal: vi.fn()
+      closeTerminal: vi.fn(),
+      terminalFitOverrideChanged: vi.fn()
     })
     runtime.attachWindow(1)
 
@@ -1473,7 +1480,8 @@ describe('OrcaRuntimeService', () => {
       splitTerminal: vi.fn(),
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
-      closeTerminal: vi.fn()
+      closeTerminal: vi.fn(),
+      terminalFitOverrideChanged: vi.fn()
     })
 
     computeWorktreePathMock.mockReturnValue('/tmp/workspaces/cli-worktree')
@@ -1590,6 +1598,7 @@ describe('OrcaRuntimeService', () => {
       runtime.setPtyController({
         write: () => true,
         kill: () => true,
+        getForegroundProcess: async () => null,
         resize: (ptyId, cols, rows) => {
           resizes.push({ ptyId, cols, rows })
           return true
@@ -1736,6 +1745,7 @@ describe('OrcaRuntimeService', () => {
       runtime.setPtyController({
         write: () => true,
         kill: () => true,
+        getForegroundProcess: async () => null,
         resize: () => false
       })
 
