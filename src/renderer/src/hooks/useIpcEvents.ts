@@ -169,7 +169,7 @@ export function useIpcEvents(): void {
     )
 
     unsubs.push(
-      window.api.ui.onActivateWorktree(({ repoId, worktreeId, setup }) => {
+      window.api.ui.onActivateWorktree(({ repoId, worktreeId, setup, startup }) => {
         void (async () => {
           // Why: fetch worktrees first so the activation helper can resolve
           // the CLI-created worktree via findWorktreeById — it arrived from
@@ -180,7 +180,7 @@ export function useIpcEvents(): void {
           // ones. This records the visit in the back/forward history stack
           // (recordWorktreeVisit), without which the nav buttons would
           // ignore the CLI-driven workspace switch.
-          activateAndRevealWorktree(worktreeId, { setup })
+          activateAndRevealWorktree(worktreeId, { setup, startup })
         })().catch((error) => {
           console.error('Failed to activate CLI-created worktree:', error)
         })

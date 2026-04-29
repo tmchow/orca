@@ -424,9 +424,6 @@ export function registerPtyHandlers(
       pendingData.clear()
       return
     }
-    if (!isLocalProvider) {
-      runtime?.onPtyData(payload.id, payload.data, Date.now())
-    }
     const existing = pendingData.get(payload.id)
     pendingData.set(payload.id, existing ? existing + payload.data : payload.data)
     if (!flushTimer) {

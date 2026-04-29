@@ -23,7 +23,9 @@ export default function RootLayout() {
             headerTitle: () => <OrcaLogo size={22} />
           }}
         />
-        <Stack.Screen name="pair-scan" options={{ title: 'Pair Host' }} />
+        <Stack.Screen name="pair-scan" options={{ headerShown: false }} />
+        <Stack.Screen name="settings" options={{ headerShown: false }} />
+        <Stack.Screen name="about" options={{ headerShown: false }} />
         <Stack.Screen name="h" options={{ headerShown: false }} />
       </Stack>
     </>

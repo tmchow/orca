@@ -4,13 +4,14 @@ import {
   Text,
   TextInput,
   Pressable,
+  Switch,
   StyleSheet,
   Platform,
   ActivityIndicator,
   Image,
   FlatList
 } from 'react-native'
-import { ChevronDown, Check, Terminal } from 'lucide-react-native'
+import { ChevronDown, ChevronUp, Check, Terminal } from 'lucide-react-native'
 import Svg, { Path, G } from 'react-native-svg'
 import type { RpcClient } from '../transport/rpc-client'
 import type { RpcSuccess } from '../transport/types'
@@ -262,6 +263,11 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
   const [selectedAgent, setSelectedAgent] = useState<AgentOption>(AGENT_OPTIONS[0]!)
   const [showAgentPicker, setShowAgentPicker] = useState(false)
   const [name, setName] = useState('')
+  const [note, setNote] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [setupCommand, setSetupCommand] = useState<string | null>(null)
+  const [setupSource, setSetupSource] = useState<string | null>(null)
+  const [runSetup, setRunSetup] = useState(true)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -269,6 +275,11 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
   useEffect(() => {
     if (!visible || !client) return
     setName('')
+    setNote('')
+    setShowAdvanced(false)
+    setSetupCommand(null)
+    setSetupSource(null)
+    setRunSetup(true)
     setError('')
     setCreating(false)
     setShowRepoPicker(false)
@@ -296,8 +307,37 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
     })()
   }, [visible, client])
 
+  useEffect(() => {
+    if (!client || !selectedRepo) {
+      setSetupCommand(null)
+      setSetupSource(null)
+      return
+    }
+    void (async () => {
+      try {
+        const response = await client.sendRequest('repo.hooks', {
+          repo: `id:${selectedRepo.id}`
+        })
+        if (response.ok) {
+          const result = (response as RpcSuccess).result as {
+            hooks: { scripts: { setup?: string } } | null
+            source: string | null
+            setupRunPolicy: string
+          }
+          const cmd = result.hooks?.scripts.setup ?? null
+          setSetupCommand(cmd)
+          setSetupSource(result.source)
+          setRunSetup(result.setupRunPolicy !== 'skip-by-default')
+        }
+      } catch {
+        setSetupCommand(null)
+        setSetupSource(null)
+      }
+    })()
+  }, [client, selectedRepo])
+
   async function handleCreate() {
-    if (!client || !selectedRepo || !name.trim()) return
+    if (!client || !selectedRepo) return
     setCreating(true)
     setError('')
 
@@ -305,36 +345,42 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
       const command =
         selectedAgent.id !== '__blank__' ? AGENT_COMMANDS[selectedAgent.id] : undefined
 
-      const response = await client.sendRequest('worktree.create', {
+      const params: Record<string, unknown> = {
         repo: `id:${selectedRepo.id}`,
-        name: name.trim(),
-        startupCommand: command
-      })
+        startupCommand: command,
+        setupDecision: runSetup ? 'inherit' : 'skip'
+      }
+      if (name.trim()) params.name = name.trim()
+      if (note.trim()) params.comment = note.trim()
+
+      const response = await client.sendRequest('worktree.create', params)
 
       if (response.ok) {
         const result = (response as RpcSuccess).result as { worktree: { id: string } }
         const worktreeId = result.worktree.id
 
         onClose()
-        onCreated(worktreeId, name.trim())
+        onCreated(worktreeId, name.trim() || 'New workspace')
       } else {
         setError(response.error.message)
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create worktree')
+      setError(e instanceof Error ? e.message : 'Failed to create workspace')
     } finally {
       setCreating(false)
     }
   }
 
-  const canCreate = selectedRepo != null && name.trim().length > 0 && !creating
+  const canCreate = selectedRepo != null && !creating
 
   return (
     <>
       <BottomDrawer visible={visible} onClose={onClose}>
         <View style={styles.header}>
-          <Text style={styles.title}>New Worktree</Text>
-          <Text style={styles.subtitle}>Pick a repository and agent</Text>
+          <Text style={styles.title}>Create Workspace</Text>
+          <Text style={styles.subtitle}>
+            Pick a repository and agent to spin up a new workspace.
+          </Text>
         </View>
 
         {loading ? (
@@ -347,7 +393,6 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
           </View>
         ) : (
           <>
-            {/* Repository */}
             <View style={styles.field}>
               <Text style={styles.label}>Repository</Text>
               <Pressable style={styles.fieldButton} onPress={() => setShowRepoPicker(true)}>
@@ -361,9 +406,10 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
               </Pressable>
             </View>
 
-            {/* Name */}
             <View style={styles.field}>
-              <Text style={styles.label}>Name</Text>
+              <Text style={styles.label}>
+                Workspace Name <Text style={styles.labelHint}>[Optional]</Text>
+              </Text>
               <TextInput
                 style={styles.input}
                 value={name}
@@ -371,7 +417,7 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
                   setName(t)
                   setError('')
                 }}
-                placeholder="my-feature"
+                placeholder="Workspace name"
                 placeholderTextColor={colors.textMuted}
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -383,7 +429,6 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
               />
             </View>
 
-            {/* Agent */}
             <View style={styles.field}>
               <Text style={styles.label}>Agent</Text>
               <Pressable style={styles.fieldButton} onPress={() => setShowAgentPicker(true)}>
@@ -395,12 +440,65 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
               </Pressable>
             </View>
 
+            <Pressable style={styles.advancedToggle} onPress={() => setShowAdvanced(!showAdvanced)}>
+              <Text style={styles.advancedText}>Advanced</Text>
+              {showAdvanced ? (
+                <ChevronUp size={14} color={colors.textSecondary} />
+              ) : (
+                <ChevronDown size={14} color={colors.textSecondary} />
+              )}
+            </Pressable>
+
+            {showAdvanced && (
+              <>
+                <View style={styles.field}>
+                  <Text style={styles.label}>Note</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={note}
+                    onChangeText={setNote}
+                    placeholder="Write a note"
+                    placeholderTextColor={colors.textMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+
+                {setupCommand ? (
+                  <View style={styles.field}>
+                    <View style={styles.setupHeader}>
+                      <Text style={styles.label}>Setup script</Text>
+                      {setupSource && (
+                        <View style={styles.sourceBadge}>
+                          <Text style={styles.sourceBadgeText}>
+                            {setupSource === 'orca.yaml' ? 'ORCA.YAML' : 'HOOKS'}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.setupBox}>
+                      <View style={styles.setupToggleRow}>
+                        <Text style={styles.setupToggleLabel}>Run setup command</Text>
+                        <Switch
+                          value={runSetup}
+                          onValueChange={setRunSetup}
+                          trackColor={{ false: colors.borderSubtle, true: colors.textSecondary }}
+                          thumbColor={colors.textPrimary}
+                          style={styles.setupSwitch}
+                        />
+                      </View>
+                      <View style={styles.setupCommandBlock}>
+                        <Text style={styles.setupCommand}>{setupCommand}</Text>
+                      </View>
+                    </View>
+                  </View>
+                ) : null}
+              </>
+            )}
+
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
             <View style={styles.actions}>
-              <Pressable style={styles.cancelButton} onPress={onClose}>
-                <Text style={styles.cancelText}>Cancel</Text>
-              </Pressable>
               <Pressable
                 style={[styles.createButton, !canCreate && styles.createButtonDisabled]}
                 disabled={!canCreate}
@@ -409,7 +507,7 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
                 {creating ? (
                   <ActivityIndicator size="small" color={colors.bgBase} />
                 ) : (
-                  <Text style={styles.createText}>Create</Text>
+                  <Text style={styles.createText}>Create Workspace</Text>
                 )}
               </Pressable>
             </View>
@@ -468,12 +566,14 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md
   },
   label: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '500',
     color: colors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
     marginBottom: spacing.xs
+  },
+  labelHint: {
+    fontWeight: '400',
+    color: colors.textMuted
   },
   fieldButton: {
     flexDirection: 'row',
@@ -509,21 +609,71 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginBottom: spacing.md
   },
+  advancedToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.xs
+  },
+  advancedText: {
+    fontSize: typography.bodySize,
+    fontWeight: '500',
+    color: colors.textSecondary
+  },
+  setupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.xs
+  },
+  sourceBadge: {
+    backgroundColor: colors.bgRaised,
+    borderRadius: 4,
+    paddingHorizontal: spacing.xs + 2,
+    paddingVertical: 2
+  },
+  sourceBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.textMuted,
+    letterSpacing: 0.5
+  },
+  setupBox: {
+    backgroundColor: colors.bgRaised,
+    borderRadius: radii.input,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    padding: spacing.md
+  },
+  setupToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm
+  },
+  setupToggleLabel: {
+    fontSize: 13,
+    color: colors.textSecondary
+  },
+  setupSwitch: {
+    transform: [{ scaleX: 0.7 }, { scaleY: 0.7 }]
+  },
+  setupCommandBlock: {
+    backgroundColor: colors.bgBase,
+    borderRadius: 6,
+    paddingHorizontal: spacing.sm + 2,
+    paddingVertical: spacing.sm
+  },
+  setupCommand: {
+    fontSize: 13,
+    fontFamily: typography.monoFamily,
+    color: colors.textPrimary
+  },
   actions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    gap: spacing.sm,
     marginTop: spacing.sm
-  },
-  cancelButton: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.button
-  },
-  cancelText: {
-    color: colors.textSecondary,
-    fontSize: typography.bodySize,
-    fontWeight: '500'
   },
   createButton: {
     backgroundColor: colors.textPrimary,

@@ -1922,4 +1922,87 @@ describe('OrcaRuntimeService', () => {
       expect(getRegisteredTabsMock).toHaveBeenCalledWith(`${TEST_REPO_ID}::/tmp/worktree-b`)
     })
   })
+
+  describe('subscribeToTerminalData', () => {
+    it('delivers PTY data to a subscriber', () => {
+      const runtime = new OrcaRuntimeService(store)
+      runtime.registerPty('pty-1', TEST_WORKTREE_ID)
+
+      const chunks: string[] = []
+      runtime.subscribeToTerminalData('pty-1', (data) => chunks.push(data))
+
+      runtime.onPtyData('pty-1', 'hello\n', 100)
+      runtime.onPtyData('pty-1', 'world\n', 101)
+
+      expect(chunks).toEqual(['hello\n', 'world\n'])
+    })
+
+    it('unsubscribe removes the listener so data is not delivered twice', () => {
+      const runtime = new OrcaRuntimeService(store)
+      runtime.registerPty('pty-1', TEST_WORKTREE_ID)
+
+      const chunks: string[] = []
+      const unsub = runtime.subscribeToTerminalData('pty-1', (data) => chunks.push(data))
+
+      runtime.onPtyData('pty-1', 'before\n', 100)
+      unsub()
+      runtime.onPtyData('pty-1', 'after\n', 101)
+
+      expect(chunks).toEqual(['before\n'])
+    })
+
+    it('delivers data exactly once per listener even with multiple subscribers', () => {
+      const runtime = new OrcaRuntimeService(store)
+      runtime.registerPty('pty-1', TEST_WORKTREE_ID)
+
+      const chunksA: string[] = []
+      const chunksB: string[] = []
+      const unsubA = runtime.subscribeToTerminalData('pty-1', (data) => chunksA.push(data))
+      runtime.subscribeToTerminalData('pty-1', (data) => chunksB.push(data))
+
+      runtime.onPtyData('pty-1', 'hello\n', 100)
+      unsubA()
+      runtime.onPtyData('pty-1', 'world\n', 101)
+
+      expect(chunksA).toEqual(['hello\n'])
+      expect(chunksB).toEqual(['hello\n', 'world\n'])
+    })
+  })
+
+  describe('registerSubscriptionCleanup', () => {
+    it('cleans up the previous subscription when re-registering the same id', () => {
+      const runtime = new OrcaRuntimeService(store)
+      runtime.registerPty('pty-1', TEST_WORKTREE_ID)
+
+      const chunksA: string[] = []
+      const chunksB: string[] = []
+      const unsubA = runtime.subscribeToTerminalData('pty-1', (data) => chunksA.push(data))
+      runtime.registerSubscriptionCleanup('sub-1', () => unsubA())
+
+      const unsubB = runtime.subscribeToTerminalData('pty-1', (data) => chunksB.push(data))
+      runtime.registerSubscriptionCleanup('sub-1', () => unsubB())
+
+      runtime.onPtyData('pty-1', 'after-resubscribe\n', 100)
+
+      // Why: only the second listener should receive data. The first was
+      // cleaned up when registerSubscriptionCleanup replaced 'sub-1'.
+      expect(chunksA).toEqual([])
+      expect(chunksB).toEqual(['after-resubscribe\n'])
+    })
+
+    it('cleanupSubscription removes the listener', () => {
+      const runtime = new OrcaRuntimeService(store)
+      runtime.registerPty('pty-1', TEST_WORKTREE_ID)
+
+      const chunks: string[] = []
+      const unsub = runtime.subscribeToTerminalData('pty-1', (data) => chunks.push(data))
+      runtime.registerSubscriptionCleanup('sub-1', () => unsub())
+
+      runtime.onPtyData('pty-1', 'before\n', 100)
+      runtime.cleanupSubscription('sub-1')
+      runtime.onPtyData('pty-1', 'after\n', 101)
+
+      expect(chunks).toEqual(['before\n'])
+    })
+  })
 })

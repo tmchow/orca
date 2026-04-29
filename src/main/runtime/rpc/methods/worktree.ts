@@ -28,14 +28,17 @@ const WorktreeCreate = z.object({
     .unknown()
     .transform((v) => (typeof v === 'string' ? v : ''))
     .pipe(z.string().min(1, 'Missing repo selector')),
-  name: z
-    .unknown()
-    .transform((v) => (typeof v === 'string' ? v : ''))
-    .pipe(z.string().min(1, 'Missing worktree name')),
+  name: OptionalString,
   baseBranch: OptionalString,
   linkedIssue: TriStateLinkedIssue,
   comment: OptionalString,
-  runHooks: OptionalBoolean
+  runHooks: OptionalBoolean,
+  setupDecision: z
+    .unknown()
+    .transform((v) =>
+      typeof v === 'string' && (v === 'run' || v === 'skip' || v === 'inherit') ? v : undefined
+    )
+    .pipe(z.enum(['run', 'skip', 'inherit']).optional())
 })
 
 const WorktreeSet = WorktreeSelector.extend({
@@ -78,11 +81,12 @@ export const WORKTREE_METHODS: RpcMethod[] = [
     handler: async (params, { runtime }) =>
       runtime.createManagedWorktree({
         repoSelector: params.repo,
-        name: params.name,
+        name: params.name ?? '',
         baseBranch: params.baseBranch,
         linkedIssue: params.linkedIssue,
         comment: params.comment,
-        runHooks: params.runHooks === true
+        runHooks: params.runHooks === true,
+        setupDecision: params.setupDecision
       })
   }),
   defineMethod({

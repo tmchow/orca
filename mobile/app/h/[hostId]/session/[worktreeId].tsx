@@ -170,6 +170,7 @@ export default function SessionScreen() {
   const locallyCreatedHandlesRef = useRef<Set<string>>(new Set())
   const activeHandleRef = useRef<string | null>(null)
   const subscribeSeqRef = useRef<Map<string, number>>(new Map())
+  const sendingRef = useRef(false)
 
   const canSend = connState === 'connected' && activeHandle != null
 
@@ -511,6 +512,12 @@ export default function SessionScreen() {
 
   useEffect(() => {
     if (connState === 'connected') {
+      // Why: on reconnect the RPC client auto-resends terminal.subscribe,
+      // creating new server-side handlers. Clear local subscription state
+      // so subscribeToTerminal's guards don't block fresh subscriptions,
+      // and clear xterm buffers so the new scrollback snapshot replaces
+      // stale content (including data that arrived while disconnected).
+      clearTerminalCache()
       setTerminalsLoaded(false)
       void (async () => {
         // Why: worktree.create already asks the desktop renderer to activate
@@ -592,7 +599,8 @@ export default function SessionScreen() {
   )
 
   async function handleSend() {
-    if (!client || !activeHandle) return
+    if (!client || !activeHandle || sendingRef.current) return
+    sendingRef.current = true
 
     const text = input
     setInput('')
@@ -605,6 +613,8 @@ export default function SessionScreen() {
       })
     } catch {
       setInput(text)
+    } finally {
+      sendingRef.current = false
     }
   }
 

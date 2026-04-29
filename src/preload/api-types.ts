@@ -841,6 +841,18 @@ export type PreloadApi = {
   runtime: {
     syncWindowGraph: (graph: RuntimeSyncWindowGraph) => Promise<RuntimeStatus>
     getStatus: () => Promise<RuntimeStatus>
+    getTerminalFitOverrides: () => Promise<
+      { ptyId: string; mode: 'mobile-fit'; cols: number; rows: number }[]
+    >
+    restoreTerminalFit: (ptyId: string) => Promise<{ restored: boolean }>
+    onTerminalFitOverrideChanged: (
+      callback: (event: {
+        ptyId: string
+        mode: 'mobile-fit' | 'desktop-fit'
+        cols: number
+        rows: number
+      }) => void
+    ) => () => void
   }
   rateLimits: {
     get: () => Promise<RateLimitState>

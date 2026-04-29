@@ -797,6 +797,10 @@ describe('useIpcEvents browser tab close routing', () => {
           onDetectedPortsChanged: () => () => {},
           onCredentialResolved: () => () => {}
         },
+        runtime: {
+          getTerminalFitOverrides: () => Promise.resolve([]),
+          onTerminalFitOverrideChanged: () => () => {}
+        },
         agentStatus: { onSet: () => () => {} }
       }
     })
@@ -982,6 +986,10 @@ describe('useIpcEvents browser tab close routing', () => {
           onDetectedPortsChanged: () => () => {},
           onCredentialResolved: () => () => {}
         },
+        runtime: {
+          getTerminalFitOverrides: () => Promise.resolve([]),
+          onTerminalFitOverrideChanged: () => () => {}
+        },
         agentStatus: { onSet: () => () => {} }
       }
     })
@@ -1162,6 +1170,10 @@ describe('useIpcEvents browser tab close routing', () => {
           onDetectedPortsChanged: () => () => {},
           onCredentialResolved: () => () => {}
         },
+        runtime: {
+          getTerminalFitOverrides: () => Promise.resolve([]),
+          onTerminalFitOverrideChanged: () => () => {}
+        },
         agentStatus: { onSet: () => () => {} }
       }
     })
@@ -1339,6 +1351,10 @@ describe('useIpcEvents shortcut hint clearing', () => {
         rateLimits: {
           get: () => Promise.resolve({ limits: {}, lastUpdatedAt: Date.now() }),
           onUpdate: () => () => {}
+        },
+        runtime: {
+          getTerminalFitOverrides: () => Promise.resolve([]),
+          onTerminalFitOverrideChanged: () => () => {}
         },
         ssh: {
           listTargets: () => Promise.resolve([]),
@@ -1546,6 +1562,10 @@ describe('useIpcEvents CLI-created worktree activation', () => {
           onPortForwardsChanged: () => () => {},
           onDetectedPortsChanged: () => () => {},
           onCredentialResolved: () => () => {}
+        },
+        runtime: {
+          getTerminalFitOverrides: () => Promise.resolve([]),
+          onTerminalFitOverrideChanged: () => () => {}
         },
         agentStatus: { onSet: () => () => {} }
       }

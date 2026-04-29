@@ -22,7 +22,9 @@ import {
   ChevronRight,
   ChevronLeft,
   Plus,
-  Moon
+  Moon,
+  Filter,
+  Check
 } from 'lucide-react-native'
 import { connect, type RpcClient } from '../../../src/transport/rpc-client'
 import { loadHosts, updateLastConnected, removeHost } from '../../../src/transport/host-store'
@@ -33,6 +35,7 @@ import { NewWorktreeModal } from '../../../src/components/NewWorktreeModal'
 import { AgentSpinner } from '../../../src/components/AgentSpinner'
 import { PickerModal, type PickerOption } from '../../../src/components/PickerModal'
 import { ActionSheetModal } from '../../../src/components/ActionSheetModal'
+import { BottomDrawer } from '../../../src/components/BottomDrawer'
 import { colors, spacing, typography } from '../../../src/theme/mobile-theme'
 import {
   loadPinnedIds,
@@ -57,8 +60,13 @@ type Worktree = {
 }
 
 type SortMode = 'smart' | 'name' | 'recent'
-type FilterMode = 'all' | 'active'
+type _FilterMode = 'all' | 'active'
 type GroupMode = 'none' | 'repo' | 'prStatus'
+
+type FilterState = {
+  activeOnly: boolean
+  selectedRepos: Set<string>
+}
 
 const STATUS_LABELS: Record<ConnectionState, string> = {
   connecting: 'Connecting…',
@@ -114,10 +122,13 @@ function sortWorktrees(worktrees: Worktree[], mode: SortMode): Worktree[] {
   })
 }
 
-function filterWorktrees(worktrees: Worktree[], filter: FilterMode, search: string): Worktree[] {
+function filterWorktrees(worktrees: Worktree[], filters: FilterState, search: string): Worktree[] {
   let result = worktrees
-  if (filter === 'active') {
+  if (filters.activeOnly) {
     result = result.filter(isWorktreeActive)
+  }
+  if (filters.selectedRepos.size > 0) {
+    result = result.filter((w) => filters.selectedRepos.has(w.repo))
   }
   if (search.trim()) {
     const q = search.toLowerCase()
@@ -162,12 +173,12 @@ function isWorktreePinned(w: Worktree, localPins: Set<string>): boolean {
 function buildSections(
   worktrees: Worktree[],
   sortMode: SortMode,
-  filterMode: FilterMode,
+  filters: FilterState,
   search: string,
   groupMode: GroupMode,
   pinnedIds: Set<string>
 ): Section[] {
-  const filtered = filterWorktrees(worktrees, filterMode, search)
+  const filtered = filterWorktrees(worktrees, filters, search)
   const sorted = sortWorktrees(filtered, sortMode)
 
   const pinned = sorted.filter((w) => isWorktreePinned(w, pinnedIds))
@@ -232,12 +243,16 @@ export default function HostScreen() {
   const [search, setSearch] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [sortMode, setSortMode] = useState<SortMode>('smart')
-  const [filterMode, setFilterMode] = useState<FilterMode>('all')
+  const [filters, setFilters] = useState<FilterState>({
+    activeOnly: false,
+    selectedRepos: new Set()
+  })
   const [groupMode, setGroupMode] = useState<GroupMode>('none')
 
   // Modals
   const [showSortPicker, setShowSortPicker] = useState(false)
   const [showGroupPicker, setShowGroupPicker] = useState(false)
+  const [showFilterModal, setShowFilterModal] = useState(false)
   const [actionTarget, setActionTarget] = useState<Worktree | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<Worktree | null>(null)
   const [confirmRemoveHost, setConfirmRemoveHost] = useState(false)
@@ -255,7 +270,10 @@ export default function HostScreen() {
       const [pins, prefs] = await Promise.all([loadPinnedIds(hostId), loadPreferences(hostId)])
       setPinnedIds(pins)
       setSortMode(prefs.sortMode as SortMode)
-      setFilterMode(prefs.filterMode as FilterMode)
+      setFilters({
+        activeOnly: prefs.filterMode === 'active',
+        selectedRepos: new Set(prefs.selectedRepos ?? [])
+      })
       setGroupMode(prefs.groupMode as GroupMode)
       setCollapsedGroups(new Set(prefs.collapsedGroups))
       setPrefsLoaded(true)
@@ -391,13 +409,42 @@ export default function HostScreen() {
     [hostId]
   )
 
-  const handleFilterToggle = useCallback(() => {
-    setFilterMode((prev) => {
-      const next: FilterMode = prev === 'all' ? 'active' : 'all'
-      if (hostId) void savePreferences(hostId, { filterMode: next })
+  const toggleActiveFilter = useCallback(() => {
+    setFilters((prev) => {
+      const next = { ...prev, activeOnly: !prev.activeOnly }
+      if (hostId)
+        void savePreferences(hostId, {
+          filterMode: next.activeOnly ? 'active' : 'all'
+        })
       return next
     })
   }, [hostId])
+
+  const toggleRepoFilter = useCallback(
+    (repo: string) => {
+      setFilters((prev) => {
+        const next = new Set(prev.selectedRepos)
+        if (next.has(repo)) next.delete(repo)
+        else next.add(repo)
+        const updated = { ...prev, selectedRepos: next }
+        if (hostId) void savePreferences(hostId, { selectedRepos: [...next] })
+        return updated
+      })
+    },
+    [hostId]
+  )
+
+  const clearFilters = useCallback(() => {
+    setFilters({ activeOnly: false, selectedRepos: new Set() })
+    if (hostId) void savePreferences(hostId, { filterMode: 'all', selectedRepos: [] })
+  }, [hostId])
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0
+    if (filters.activeOnly) count++
+    count += filters.selectedRepos.size
+    return count
+  }, [filters])
 
   const handleGroupChange = useCallback(
     (value: GroupMode) => {
@@ -411,6 +458,14 @@ export default function HostScreen() {
     connState === 'disconnected' || connState === 'reconnecting' || connState === 'auth-failed'
       ? lastKnownWorktrees
       : worktrees
+
+  const uniqueRepos = useMemo(() => {
+    const repos = new Map<string, string>()
+    for (const w of displayWorktrees) {
+      if (!repos.has(w.repo)) repos.set(w.repo, repoColor(w.repo))
+    }
+    return [...repos.entries()].map(([name, color]) => ({ name, color }))
+  }, [displayWorktrees])
 
   const toggleCollapsed = useCallback(
     (title: string) => {
@@ -426,8 +481,8 @@ export default function HostScreen() {
   )
 
   const rawSections = useMemo(
-    () => buildSections(displayWorktrees, sortMode, filterMode, search, groupMode, pinnedIds),
-    [displayWorktrees, sortMode, filterMode, search, groupMode, pinnedIds]
+    () => buildSections(displayWorktrees, sortMode, filters, search, groupMode, pinnedIds),
+    [displayWorktrees, sortMode, filters, search, groupMode, pinnedIds]
   )
 
   const sections = useMemo(
@@ -470,16 +525,17 @@ export default function HostScreen() {
         {/* Filter/sort/group toolbar */}
         <View style={styles.toolbar}>
           <Pressable
-            style={[styles.filterChip, filterMode === 'active' && styles.filterChipActive]}
-            onPress={handleFilterToggle}
+            style={[styles.filterChip, activeFilterCount > 0 && styles.filterChipActive]}
+            onPress={() => setShowFilterModal(true)}
           >
+            <Filter
+              size={12}
+              color={activeFilterCount > 0 ? colors.textPrimary : colors.textSecondary}
+            />
             <Text
-              style={[
-                styles.filterChipText,
-                filterMode === 'active' && styles.filterChipTextActive
-              ]}
+              style={[styles.filterChipText, activeFilterCount > 0 && styles.filterChipTextActive]}
             >
-              Active
+              Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
             </Text>
           </Pressable>
 
@@ -574,8 +630,8 @@ export default function HostScreen() {
           <Text style={styles.emptyText}>
             {search
               ? 'No matching worktrees'
-              : filterMode === 'active'
-                ? 'No active worktrees'
+              : activeFilterCount > 0
+                ? 'No worktrees match filters'
                 : 'No worktrees'}
           </Text>
         </View>
@@ -696,6 +752,48 @@ export default function HostScreen() {
         onSelect={handleGroupChange}
         onClose={() => setShowGroupPicker(false)}
       />
+
+      {/* Filter modal — matches desktop's Status + Repositories dropdown */}
+      <BottomDrawer visible={showFilterModal} onClose={() => setShowFilterModal(false)}>
+        <View style={styles.filterModalHeader}>
+          <Text style={styles.filterModalTitle}>Filter</Text>
+          {activeFilterCount > 0 && (
+            <Pressable onPress={clearFilters}>
+              <Text style={styles.clearFiltersText}>Clear filters</Text>
+            </Pressable>
+          )}
+        </View>
+
+        <Text style={styles.filterSectionLabel}>Status</Text>
+        <View style={styles.filterGroup}>
+          <Pressable style={styles.filterRow} onPress={toggleActiveFilter}>
+            <Text style={styles.filterRowText}>Active only</Text>
+            {filters.activeOnly && <Check size={14} color={colors.textPrimary} />}
+          </Pressable>
+        </View>
+
+        {uniqueRepos.length > 1 && (
+          <>
+            <Text style={styles.filterSectionLabel}>Repositories</Text>
+            <View style={styles.filterGroup}>
+              {uniqueRepos.map((repo, i) => (
+                <View key={repo.name}>
+                  {i > 0 && <View style={styles.filterSeparator} />}
+                  <Pressable style={styles.filterRow} onPress={() => toggleRepoFilter(repo.name)}>
+                    <View style={[styles.filterRepoDot, { backgroundColor: repo.color }]} />
+                    <Text style={styles.filterRowText} numberOfLines={1}>
+                      {repo.name}
+                    </Text>
+                    {filters.selectedRepos.has(repo.name) && (
+                      <Check size={14} color={colors.textPrimary} />
+                    )}
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          </>
+        )}
+      </BottomDrawer>
 
       {/* Worktree long-press action sheet */}
       <ActionSheetModal
@@ -873,6 +971,9 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.borderSubtle
   },
   filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingHorizontal: spacing.sm + 2,
     paddingVertical: spacing.xs,
     borderRadius: 12,
@@ -1061,5 +1162,58 @@ const styles = StyleSheet.create({
     minWidth: 16,
     textAlign: 'right',
     paddingTop: 3
+  },
+  filterModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.xs,
+    marginBottom: spacing.md
+  },
+  filterModalTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.textPrimary
+  },
+  clearFiltersText: {
+    fontSize: 13,
+    color: colors.accentBlue
+  },
+  filterSectionLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.xs,
+    paddingHorizontal: spacing.xs
+  },
+  filterGroup: {
+    backgroundColor: colors.bgPanel,
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: spacing.md
+  },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md + 2,
+    gap: spacing.sm
+  },
+  filterRowText: {
+    flex: 1,
+    fontSize: typography.bodySize,
+    color: colors.textPrimary
+  },
+  filterSeparator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.borderSubtle,
+    marginHorizontal: spacing.md
+  },
+  filterRepoDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4
   }
 })

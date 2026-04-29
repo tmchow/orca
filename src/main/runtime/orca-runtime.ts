@@ -88,7 +88,14 @@ import {
   searchBaseRefs
 } from '../git/repo'
 import { listWorktrees, addWorktree, removeWorktree } from '../git/worktree'
-import { createSetupRunnerScript, getEffectiveHooks, runHook } from '../hooks'
+import {
+  createSetupRunnerScript,
+  getEffectiveHooks,
+  getEffectiveSetupRunPolicy,
+  hasHooksFile,
+  runHook,
+  shouldRunSetupForCreate
+} from '../hooks'
 import { REPO_COLORS } from '../../shared/constants'
 import { listRepoWorktrees } from '../repo-worktrees'
 import type { Store } from '../persistence'
@@ -696,6 +703,14 @@ export class OrcaRuntimeService {
   }
 
   registerSubscriptionCleanup(subscriptionId: string, cleanup: () => void): void {
+    // Why: mobile clients reconnect frequently (phone lock, network switch).
+    // The RPC client re-sends terminal.subscribe on reconnect, creating a new
+    // handler before the old one is cleaned up. Without this, the old data
+    // listener leaks in dataListeners and duplicates every PTY data event.
+    const existing = this.subscriptionCleanups.get(subscriptionId)
+    if (existing) {
+      existing()
+    }
     this.subscriptionCleanups.set(subscriptionId, cleanup)
   }
 
@@ -1430,6 +1445,19 @@ export class OrcaRuntimeService {
     }
   }
 
+  async getRepoHooks(repoSelector: string) {
+    const repo = await this.resolveRepoSelector(repoSelector)
+    const hasFile = hasHooksFile(repo.path)
+    const hooks = getEffectiveHooks(repo)
+    const setupRunPolicy = getEffectiveSetupRunPolicy(repo)
+    return {
+      hasHooksFile: hasFile,
+      hooks,
+      setupRunPolicy,
+      source: hasFile ? 'orca.yaml' : hooks ? 'legacy' : null
+    }
+  }
+
   async listManagedWorktrees(
     repoSelector?: string,
     limit = DEFAULT_WORKTREE_LIST_LIMIT
@@ -1476,6 +1504,7 @@ export class OrcaRuntimeService {
     linkedIssue?: number | null
     comment?: string
     runHooks?: boolean
+    setupDecision?: 'run' | 'skip' | 'inherit'
   }): Promise<CreateWorktreeResult> {
     if (!this.store) {
       throw new Error('runtime_unavailable')
@@ -1563,7 +1592,14 @@ export class OrcaRuntimeService {
     let setup: CreateWorktreeResult['setup']
     let warning: string | undefined
     const hooks = getEffectiveHooks(repo)
-    if (hooks?.scripts.setup && args.runHooks === true) {
+    // Why: setupDecision lets mobile/CLI callers control whether the setup
+    // script runs. 'skip' suppresses it, 'run' forces it, 'inherit' (default)
+    // defers to the repo's orca.yaml setupRunPolicy. runHooks === true maps
+    // to 'run' for backwards compatibility with the desktop create flow.
+    const effectiveDecision = args.runHooks ? 'run' : (args.setupDecision ?? 'inherit')
+    const shouldRunSetup =
+      hooks?.scripts.setup && shouldRunSetupForCreate(repo, effectiveDecision)
+    if (shouldRunSetup && hooks?.scripts.setup) {
       if (this.authoritativeWindowId !== null) {
         try {
           // Why: CLI-created worktrees must use the same runner-script path as the

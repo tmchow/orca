@@ -1,21 +1,21 @@
 import { useState, useRef, useCallback } from 'react'
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 import { useRouter } from 'expo-router'
-import { Monitor, Settings, Smartphone } from 'lucide-react-native'
+import { ChevronLeft } from 'lucide-react-native'
 import { decodePairingUrl } from '../src/transport/pairing'
 import { connect } from '../src/transport/rpc-client'
 import { saveHost, getNextHostName } from '../src/transport/host-store'
 import type { PairingOffer } from '../src/transport/types'
 import { colors, spacing, radii, typography } from '../src/theme/mobile-theme'
 
-function Step({ number, icon, text }: { number: number; icon: React.ReactNode; text: string }) {
+function Step({ number, text }: { number: number; text: string }) {
   return (
     <View style={styles.step}>
       <View style={styles.stepBadge}>
         <Text style={styles.stepNumber}>{number}</Text>
       </View>
-      <View style={styles.stepIcon}>{icon}</View>
       <Text style={styles.stepText}>{text}</Text>
     </View>
   )
@@ -23,6 +23,7 @@ function Step({ number, icon, text }: { number: number; icon: React.ReactNode; t
 
 export default function PairScanScreen() {
   const router = useRouter()
+  const insets = useSafeAreaInsets()
   const [permission, requestPermission] = useCameraPermissions()
   const [status, setStatus] = useState<'scanning' | 'connecting' | 'error'>('scanning')
   const [errorMessage, setErrorMessage] = useState('')
@@ -94,9 +95,11 @@ export default function PairScanScreen() {
     processingRef.current = false
   }
 
+  const containerPadding = { paddingTop: insets.top + spacing.sm }
+
   if (!permission) {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, containerPadding]}>
         <ActivityIndicator color={colors.textSecondary} />
       </View>
     )
@@ -104,7 +107,10 @@ export default function PairScanScreen() {
 
   if (!permission.granted) {
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, containerPadding]}>
+        <Pressable style={styles.backButton} onPress={() => router.back()}>
+          <ChevronLeft size={22} color={colors.textSecondary} />
+        </Pressable>
         <View style={styles.centered}>
           <Text style={styles.title}>Camera Permission</Text>
           <Text style={styles.subtitle}>
@@ -119,32 +125,32 @@ export default function PairScanScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, containerPadding]}>
+      <Pressable style={styles.backButton} onPress={() => router.back()}>
+        <ChevronLeft size={22} color={colors.textSecondary} />
+      </Pressable>
+
       <View style={styles.steps}>
-        <Step
-          number={1}
-          icon={<Monitor size={14} color={colors.textSecondary} />}
-          text="Open Orca on your computer"
-        />
-        <Step
-          number={2}
-          icon={<Settings size={14} color={colors.textSecondary} />}
-          text="Go to Settings → Mobile"
-        />
-        <Step
-          number={3}
-          icon={<Smartphone size={14} color={colors.textSecondary} />}
-          text="Point this camera at the QR code"
-        />
+        <Step number={1} text="Open Orca on your computer" />
+        <Step number={2} text="Go to Settings → Mobile" />
+        <Step number={3} text="Scan the QR code" />
       </View>
 
       {status === 'scanning' && (
-        <CameraView
-          style={styles.camera}
-          facing="back"
-          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-          onBarcodeScanned={handleBarCodeScanned}
-        />
+        <View style={styles.cameraWrap}>
+          <CameraView
+            style={styles.camera}
+            facing="back"
+            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+            onBarcodeScanned={handleBarCodeScanned}
+          />
+          <View style={styles.reticle} pointerEvents="none">
+            <View style={[styles.corner, styles.cornerTL]} />
+            <View style={[styles.corner, styles.cornerTR]} />
+            <View style={[styles.corner, styles.cornerBL]} />
+            <View style={[styles.corner, styles.cornerBR]} />
+          </View>
+        </View>
       )}
 
       {status === 'connecting' && (
@@ -172,9 +178,18 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bgBase,
     padding: spacing.lg
   },
+  backButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.sm
+  },
   steps: {
     gap: spacing.sm,
-    marginBottom: spacing.lg
+    marginBottom: spacing.lg,
+    marginLeft: 7
   },
   step: {
     flexDirection: 'row',
@@ -194,19 +209,56 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.textSecondary
   },
-  stepIcon: {
-    width: 20,
-    alignItems: 'center'
-  },
   stepText: {
     fontSize: typography.bodySize,
-    color: colors.textSecondary,
-    flex: 1
+    color: colors.textSecondary
   },
-  camera: {
+  cameraWrap: {
     flex: 1,
     borderRadius: radii.camera,
     overflow: 'hidden'
+  },
+  camera: {
+    ...StyleSheet.absoluteFillObject
+  },
+  reticle: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  corner: {
+    position: 'absolute',
+    width: 28,
+    height: 28,
+    borderColor: 'rgba(255,255,255,0.7)'
+  },
+  cornerTL: {
+    top: '30%',
+    left: '20%',
+    borderTopWidth: 2.5,
+    borderLeftWidth: 2.5,
+    borderTopLeftRadius: 6
+  },
+  cornerTR: {
+    top: '30%',
+    right: '20%',
+    borderTopWidth: 2.5,
+    borderRightWidth: 2.5,
+    borderTopRightRadius: 6
+  },
+  cornerBL: {
+    bottom: '30%',
+    left: '20%',
+    borderBottomWidth: 2.5,
+    borderLeftWidth: 2.5,
+    borderBottomLeftRadius: 6
+  },
+  cornerBR: {
+    bottom: '30%',
+    right: '20%',
+    borderBottomWidth: 2.5,
+    borderRightWidth: 2.5,
+    borderBottomRightRadius: 6
   },
   centered: {
     flex: 1,

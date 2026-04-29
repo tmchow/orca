@@ -8,13 +8,15 @@ export type HostPreferences = {
   filterMode: string
   groupMode: string
   collapsedGroups: string[]
+  selectedRepos: string[]
 }
 
 const DEFAULT_PREFS: HostPreferences = {
   sortMode: 'smart',
   filterMode: 'all',
   groupMode: 'none',
-  collapsedGroups: []
+  collapsedGroups: [],
+  selectedRepos: []
 }
 
 export async function loadPinnedIds(hostId: string): Promise<Set<string>> {

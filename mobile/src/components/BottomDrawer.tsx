@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect } from 'react'
 import { Modal, View, Pressable, StyleSheet, Platform, useWindowDimensions } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
 import Animated, {
   useSharedValue,
@@ -13,7 +14,7 @@ import Animated, {
 import { colors, spacing } from '../theme/mobile-theme'
 
 const DISMISS_THRESHOLD = 80
-const SPRING_CONFIG = { damping: 20, stiffness: 300 }
+const SPRING_CONFIG = { damping: 28, stiffness: 400 }
 // Why: negative translateY (pulling up) is damped with a rubber-band factor
 // so the drawer resists upward dragging — a subtle polish touch that signals
 // the drawer cannot expand further.
@@ -29,6 +30,7 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
   const translateY = useSharedValue(0)
   const backdropOpacity = useSharedValue(0)
   const { height: screenHeight } = useWindowDimensions()
+  const insets = useSafeAreaInsets()
 
   useEffect(() => {
     if (visible) {
@@ -51,9 +53,13 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
     })
     .onEnd((e) => {
       if (e.translationY > DISMISS_THRESHOLD || e.velocityY > 500) {
-        translateY.value = withTiming(screenHeight, { duration: 200 })
-        backdropOpacity.value = withTiming(0, { duration: 200 })
-        runOnJS(dismiss)()
+        const velocity = Math.max(e.velocityY, 800)
+        const remaining = screenHeight - e.translationY
+        const duration = Math.min(Math.max((remaining / velocity) * 1000, 120), 300)
+        translateY.value = withTiming(screenHeight, { duration }, () => {
+          runOnJS(dismiss)()
+        })
+        backdropOpacity.value = withTiming(0, { duration })
       } else {
         translateY.value = withSpring(0, SPRING_CONFIG)
       }
@@ -76,9 +82,12 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
 
         <View style={styles.anchor} pointerEvents="box-none">
           <GestureDetector gesture={panGesture}>
-            <Animated.View style={[styles.drawer, drawerStyle]}>
+            <Animated.View
+              style={[styles.drawer, { paddingBottom: insets.bottom + spacing.lg }, drawerStyle]}
+            >
               <View style={styles.handle} />
               {children}
+              <View style={styles.bottomExtension} />
             </Animated.View>
           </GestureDetector>
         </View>
@@ -104,7 +113,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     paddingHorizontal: spacing.md,
-    paddingBottom: spacing.xl + spacing.md,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -124,5 +132,13 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     marginBottom: spacing.md,
     opacity: 0.4
+  },
+  bottomExtension: {
+    position: 'absolute',
+    bottom: -100,
+    left: 0,
+    right: 0,
+    height: 100,
+    backgroundColor: colors.bgBase
   }
 })

@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react'
 import { View, Text, StyleSheet, Pressable, FlatList } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter, useFocusEffect } from 'expo-router'
-import { MoreHorizontal, QrCode, Server } from 'lucide-react-native'
+import { MoreHorizontal, QrCode, Server, Settings } from 'lucide-react-native'
 import { loadHosts, removeHost, renameHost } from '../src/transport/host-store'
 import { connect } from '../src/transport/rpc-client'
 import type { ConnectionState, HostProfile } from '../src/transport/types'
@@ -206,6 +206,11 @@ export default function HomeScreen() {
         ]}
         onClose={() => setConfirmRemove(null)}
       />
+
+      <Pressable style={styles.settingsButton} onPress={() => router.push('/settings')}>
+        <Settings size={16} color={colors.textMuted} />
+        <Text style={styles.settingsText}>Settings</Text>
+      </Pressable>
     </SafeAreaView>
   )
 }
@@ -228,14 +233,6 @@ const styles = StyleSheet.create({
     minWidth: 0
   },
   logoMark: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.bgPanel,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
     marginRight: spacing.sm
   },
   brandName: {
@@ -393,5 +390,19 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: typography.metaSize,
     marginTop: 2
+  },
+  settingsButton: {
+    flexDirection: 'row',
+    alignSelf: 'center',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.xl
+  },
+  settingsText: {
+    fontSize: 13,
+    color: colors.textMuted,
+    fontWeight: '500'
   }
 })
