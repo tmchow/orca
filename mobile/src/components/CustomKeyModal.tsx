@@ -1,18 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import {
-  Modal,
-  View,
-  Text,
-  Pressable,
-  TextInput,
-  StyleSheet,
-  Platform,
-  ScrollView,
-  Switch
-} from 'react-native'
+import { View, Text, Pressable, TextInput, StyleSheet, ScrollView, Switch } from 'react-native'
 import { ChevronLeft } from 'lucide-react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { colors, spacing, radii, typography } from '../theme/mobile-theme'
+import { BottomDrawer } from './BottomDrawer'
 
 const STORAGE_KEY = 'orca:custom-accessory-keys'
 
@@ -106,157 +97,120 @@ export function CustomKeyModal({ visible, onClose, onKeysChanged }: Props) {
   const showBack = step !== 'choose-type'
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <View style={styles.drawer}>
-          <View style={styles.handle} />
+    <BottomDrawer visible={visible} onClose={onClose}>
+      <View style={styles.header}>
+        {showBack ? (
+          <Pressable
+            style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
+            onPress={() => setStep('choose-type')}
+            accessibilityLabel="Back"
+          >
+            <ChevronLeft size={18} color={colors.textSecondary} />
+          </Pressable>
+        ) : (
+          <View style={styles.backSpacer} />
+        )}
+        <Text style={styles.title}>
+          {step === 'choose-type' && 'Add Shortcut'}
+          {step === 'pick-ctrl' && 'Ctrl + Key'}
+          {step === 'pick-alt' && 'Alt + Key'}
+          {step === 'text-macro' && 'Text Macro'}
+        </Text>
+        <View style={styles.backSpacer} />
+      </View>
 
-          <View style={styles.header}>
-            {showBack ? (
-              <Pressable
-                style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-                onPress={() => setStep('choose-type')}
-                accessibilityLabel="Back"
-              >
-                <ChevronLeft size={18} color={colors.textSecondary} />
-              </Pressable>
-            ) : (
-              <View style={styles.backSpacer} />
-            )}
-            <Text style={styles.title}>
-              {step === 'choose-type' && 'Add Shortcut'}
-              {step === 'pick-ctrl' && 'Ctrl + Key'}
-              {step === 'pick-alt' && 'Alt + Key'}
-              {step === 'text-macro' && 'Text Macro'}
-            </Text>
-            <View style={styles.backSpacer} />
-          </View>
-
-          {step === 'choose-type' && (
-            <View style={styles.group}>
-              <Pressable
-                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-                onPress={() => setStep('pick-ctrl')}
-              >
-                <Text style={styles.rowLabel}>Ctrl + Key</Text>
-                <Text style={styles.rowHint}>Control character shortcuts</Text>
-              </Pressable>
-              <View style={styles.separator} />
-              <Pressable
-                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-                onPress={() => setStep('pick-alt')}
-              >
-                <Text style={styles.rowLabel}>Alt + Key</Text>
-                <Text style={styles.rowHint}>Alt/Option key combos</Text>
-              </Pressable>
-              <View style={styles.separator} />
-              <Pressable
-                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-                onPress={() => setStep('text-macro')}
-              >
-                <Text style={styles.rowLabel}>Text Macro</Text>
-                <Text style={styles.rowHint}>Send custom text command</Text>
-              </Pressable>
-            </View>
-          )}
-
-          {(step === 'pick-ctrl' || step === 'pick-alt') && (
-            <View style={styles.group}>
-              <ScrollView style={styles.keyGridScroll} contentContainerStyle={styles.keyGrid}>
-                {ALPHA_KEYS.map((letter) => (
-                  <Pressable
-                    key={letter}
-                    style={({ pressed }) => [styles.keyCell, pressed && styles.keyCellPressed]}
-                    onPress={() =>
-                      step === 'pick-ctrl' ? handleCtrlKey(letter) : handleAltKey(letter)
-                    }
-                  >
-                    <Text style={styles.keyCellText}>{letter}</Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-
-          {step === 'text-macro' && (
-            <View style={styles.group}>
-              <View style={styles.macroForm}>
-                <Text style={styles.fieldLabel}>Label</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={macroLabel}
-                  onChangeText={setMacroLabel}
-                  placeholder="e.g. Build"
-                  placeholderTextColor={colors.textMuted}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-                <Text style={styles.fieldLabel}>Command</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={macroText}
-                  onChangeText={setMacroText}
-                  placeholder="e.g. pnpm build"
-                  placeholderTextColor={colors.textMuted}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-                <View style={styles.switchRow}>
-                  <Text style={styles.switchLabel}>Press Enter</Text>
-                  <Switch
-                    value={macroEnter}
-                    onValueChange={setMacroEnter}
-                    trackColor={{ false: colors.bgRaised, true: colors.accentBlue }}
-                  />
-                </View>
-                <Pressable
-                  style={[styles.saveButton, !macroText.trim() && styles.saveButtonDisabled]}
-                  disabled={!macroText.trim()}
-                  onPress={handleMacroSave}
-                >
-                  <Text style={styles.saveButtonText}>Add Shortcut</Text>
-                </Pressable>
-              </View>
-            </View>
-          )}
+      {step === 'choose-type' && (
+        <View style={styles.group}>
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => setStep('pick-ctrl')}
+          >
+            <Text style={styles.rowLabel}>Ctrl + Key</Text>
+            <Text style={styles.rowHint}>Control character shortcuts</Text>
+          </Pressable>
+          <View style={styles.separator} />
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => setStep('pick-alt')}
+          >
+            <Text style={styles.rowLabel}>Alt + Key</Text>
+            <Text style={styles.rowHint}>Alt/Option key combos</Text>
+          </Pressable>
+          <View style={styles.separator} />
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => setStep('text-macro')}
+          >
+            <Text style={styles.rowLabel}>Text Macro</Text>
+            <Text style={styles.rowHint}>Send custom text command</Text>
+          </Pressable>
         </View>
-      </Pressable>
-    </Modal>
+      )}
+
+      {(step === 'pick-ctrl' || step === 'pick-alt') && (
+        <View style={styles.group}>
+          <ScrollView style={styles.keyGridScroll} contentContainerStyle={styles.keyGrid}>
+            {ALPHA_KEYS.map((letter) => (
+              <Pressable
+                key={letter}
+                style={({ pressed }) => [styles.keyCell, pressed && styles.keyCellPressed]}
+                onPress={() =>
+                  step === 'pick-ctrl' ? handleCtrlKey(letter) : handleAltKey(letter)
+                }
+              >
+                <Text style={styles.keyCellText}>{letter}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {step === 'text-macro' && (
+        <View style={styles.group}>
+          <View style={styles.macroForm}>
+            <Text style={styles.fieldLabel}>Label</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={macroLabel}
+              onChangeText={setMacroLabel}
+              placeholder="e.g. Build"
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <Text style={styles.fieldLabel}>Command</Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={macroText}
+              onChangeText={setMacroText}
+              placeholder="e.g. pnpm build"
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Press Enter</Text>
+              <Switch
+                value={macroEnter}
+                onValueChange={setMacroEnter}
+                trackColor={{ false: colors.bgRaised, true: colors.accentBlue }}
+              />
+            </View>
+            <Pressable
+              style={[styles.saveButton, !macroText.trim() && styles.saveButtonDisabled]}
+              disabled={!macroText.trim()}
+              onPress={handleMacroSave}
+            >
+              <Text style={styles.saveButtonText}>Add Shortcut</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+    </BottomDrawer>
   )
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end'
-  },
-  drawer: {
-    backgroundColor: colors.bgBase,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.xl + spacing.md,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -2 },
-        shadowOpacity: 0.2,
-        shadowRadius: 10
-      },
-      android: { elevation: 8 }
-    })
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.textMuted,
-    marginTop: spacing.sm,
-    marginBottom: spacing.md,
-    opacity: 0.4
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,6 +1,7 @@
-import { Modal, View, Text, Pressable, StyleSheet, Platform } from 'react-native'
+import { View, Text, Pressable, StyleSheet } from 'react-native'
 import { Edit3, Trash2, type LucideIcon } from 'lucide-react-native'
 import { colors, spacing, typography } from '../theme/mobile-theme'
+import { BottomDrawer } from './BottomDrawer'
 
 export type ActionSheetAction = {
   label: string
@@ -25,90 +26,50 @@ function iconForAction(label: string, destructive?: boolean, icon?: LucideIcon):
 
 export function ActionSheetModal({ visible, title, message, actions, onClose }: Props) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <View style={styles.drawer}>
-          <View style={styles.handle} />
-
-          {(title || message) && (
-            <View style={styles.header}>
-              {title ? (
-                <Text style={styles.title} numberOfLines={1}>
-                  {title}
-                </Text>
-              ) : null}
-              {message ? <Text style={styles.message}>{message}</Text> : null}
-            </View>
-          )}
-
-          <View style={styles.actionGroup}>
-            {actions.map((action, i) => {
-              const Icon = iconForAction(action.label, action.destructive, action.icon)
-              return (
-                <View key={action.label}>
-                  {i > 0 && <View style={styles.separator} />}
-                  <Pressable
-                    style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
-                    onPress={() => {
-                      onClose()
-                      action.onPress()
-                    }}
-                  >
-                    <Icon
-                      size={16}
-                      color={action.destructive ? colors.statusRed : colors.textSecondary}
-                    />
-                    <Text
-                      style={[
-                        styles.actionText,
-                        action.destructive && styles.actionTextDestructive
-                      ]}
-                    >
-                      {action.label}
-                    </Text>
-                  </Pressable>
-                </View>
-              )
-            })}
-          </View>
+    <BottomDrawer visible={visible} onClose={onClose}>
+      {(title || message) && (
+        <View style={styles.header}>
+          {title ? (
+            <Text style={styles.title} numberOfLines={1}>
+              {title}
+            </Text>
+          ) : null}
+          {message ? <Text style={styles.message}>{message}</Text> : null}
         </View>
-      </Pressable>
-    </Modal>
+      )}
+
+      <View style={styles.actionGroup}>
+        {actions.map((action, i) => {
+          const Icon = iconForAction(action.label, action.destructive, action.icon)
+          return (
+            <View key={action.label}>
+              {i > 0 && <View style={styles.separator} />}
+              <Pressable
+                style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
+                onPress={() => {
+                  onClose()
+                  action.onPress()
+                }}
+              >
+                <Icon
+                  size={16}
+                  color={action.destructive ? colors.statusRed : colors.textSecondary}
+                />
+                <Text
+                  style={[styles.actionText, action.destructive && styles.actionTextDestructive]}
+                >
+                  {action.label}
+                </Text>
+              </Pressable>
+            </View>
+          )
+        })}
+      </View>
+    </BottomDrawer>
   )
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end'
-  },
-  drawer: {
-    backgroundColor: colors.bgBase,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.xl + spacing.md,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -2 },
-        shadowOpacity: 0.2,
-        shadowRadius: 10
-      },
-      android: { elevation: 8 }
-    })
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.textMuted,
-    marginTop: spacing.sm,
-    marginBottom: spacing.md,
-    opacity: 0.4
-  },
   header: {
     paddingHorizontal: spacing.xs,
     paddingBottom: spacing.sm

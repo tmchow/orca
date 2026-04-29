@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import {
-  Modal,
   View,
   Text,
   TextInput,
@@ -16,6 +15,7 @@ import Svg, { Path, G } from 'react-native-svg'
 import type { RpcClient } from '../transport/rpc-client'
 import type { RpcSuccess } from '../transport/types'
 import { colors, spacing, radii, typography } from '../theme/mobile-theme'
+import { BottomDrawer } from './BottomDrawer'
 
 type Repo = {
   id: string
@@ -209,48 +209,40 @@ function PickerListModal<T extends { id: string; label: string }>({
   renderIcon?: (item: T) => React.ReactNode
 }) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.pickerBackdrop} onPress={onClose}>
-        <View style={styles.pickerDrawer} onStartShouldSetResponder={() => true}>
-          <View style={styles.pickerHandle} />
-          <View style={styles.pickerHeader}>
-            <Text style={styles.pickerTitle}>{title}</Text>
-          </View>
-          <View style={styles.pickerGroup}>
-            <FlatList
-              data={items}
-              keyExtractor={(item) => item.id}
-              style={styles.pickerList}
-              ItemSeparatorComponent={() => <View style={styles.pickerSeparator} />}
-              renderItem={({ item }) => {
-                const selected = item.id === selectedId
-                return (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.pickerItem,
-                      pressed && styles.pickerItemPressed
-                    ]}
-                    onPress={() => {
-                      onSelect(item)
-                      onClose()
-                    }}
-                  >
-                    {renderIcon?.(item)}
-                    <Text
-                      style={[styles.pickerItemText, selected && styles.pickerItemTextSelected]}
-                      numberOfLines={1}
-                    >
-                      {item.label}
-                    </Text>
-                    {selected && <Check size={14} color={colors.textPrimary} />}
-                  </Pressable>
-                )
-              }}
-            />
-          </View>
-        </View>
-      </Pressable>
-    </Modal>
+    <BottomDrawer visible={visible} onClose={onClose}>
+      <View style={styles.pickerHeader}>
+        <Text style={styles.pickerTitle}>{title}</Text>
+      </View>
+      <View style={styles.pickerGroup}>
+        <FlatList
+          data={items}
+          keyExtractor={(item) => item.id}
+          style={styles.pickerList}
+          ItemSeparatorComponent={() => <View style={styles.pickerSeparator} />}
+          renderItem={({ item }) => {
+            const selected = item.id === selectedId
+            return (
+              <Pressable
+                style={({ pressed }) => [styles.pickerItem, pressed && styles.pickerItemPressed]}
+                onPress={() => {
+                  onSelect(item)
+                  onClose()
+                }}
+              >
+                {renderIcon?.(item)}
+                <Text
+                  style={[styles.pickerItemText, selected && styles.pickerItemTextSelected]}
+                  numberOfLines={1}
+                >
+                  {item.label}
+                </Text>
+                {selected && <Check size={14} color={colors.textPrimary} />}
+              </Pressable>
+            )
+          }}
+        />
+      </View>
+    </BottomDrawer>
   )
 }
 
@@ -339,99 +331,91 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
 
   return (
     <>
-      <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-        <Pressable style={styles.backdrop} onPress={onClose}>
-          <View style={styles.drawer} onStartShouldSetResponder={() => true}>
-            <View style={styles.handle} />
-            <View style={styles.header}>
-              <Text style={styles.title}>New Worktree</Text>
-              <Text style={styles.subtitle}>Pick a repository and agent</Text>
+      <BottomDrawer visible={visible} onClose={onClose}>
+        <View style={styles.header}>
+          <Text style={styles.title}>New Worktree</Text>
+          <Text style={styles.subtitle}>Pick a repository and agent</Text>
+        </View>
+
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="small" color={colors.textSecondary} />
+          </View>
+        ) : repos.length === 0 ? (
+          <View style={styles.loadingContainer}>
+            <Text style={styles.emptyText}>No repositories found</Text>
+          </View>
+        ) : (
+          <>
+            {/* Repository */}
+            <View style={styles.field}>
+              <Text style={styles.label}>Repository</Text>
+              <Pressable style={styles.fieldButton} onPress={() => setShowRepoPicker(true)}>
+                <Text
+                  style={[styles.fieldButtonText, !selectedRepo && styles.fieldButtonPlaceholder]}
+                  numberOfLines={1}
+                >
+                  {selectedRepo?.displayName ?? 'Select a repository'}
+                </Text>
+                <ChevronDown size={14} color={colors.textMuted} />
+              </Pressable>
             </View>
 
-            {loading ? (
-              <View style={styles.loadingContainer}>
-                <ActivityIndicator size="small" color={colors.textSecondary} />
-              </View>
-            ) : repos.length === 0 ? (
-              <View style={styles.loadingContainer}>
-                <Text style={styles.emptyText}>No repositories found</Text>
-              </View>
-            ) : (
-              <>
-                {/* Repository */}
-                <View style={styles.field}>
-                  <Text style={styles.label}>Repository</Text>
-                  <Pressable style={styles.fieldButton} onPress={() => setShowRepoPicker(true)}>
-                    <Text
-                      style={[
-                        styles.fieldButtonText,
-                        !selectedRepo && styles.fieldButtonPlaceholder
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {selectedRepo?.displayName ?? 'Select a repository'}
-                    </Text>
-                    <ChevronDown size={14} color={colors.textMuted} />
-                  </Pressable>
-                </View>
+            {/* Name */}
+            <View style={styles.field}>
+              <Text style={styles.label}>Name</Text>
+              <TextInput
+                style={styles.input}
+                value={name}
+                onChangeText={(t) => {
+                  setName(t)
+                  setError('')
+                }}
+                placeholder="my-feature"
+                placeholderTextColor={colors.textMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus={repos.length <= 1}
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  if (canCreate) void handleCreate()
+                }}
+              />
+            </View>
 
-                {/* Name */}
-                <View style={styles.field}>
-                  <Text style={styles.label}>Name</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={name}
-                    onChangeText={(t) => {
-                      setName(t)
-                      setError('')
-                    }}
-                    placeholder="my-feature"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    autoFocus={repos.length <= 1}
-                    returnKeyType="done"
-                    onSubmitEditing={() => {
-                      if (canCreate) void handleCreate()
-                    }}
-                  />
-                </View>
+            {/* Agent */}
+            <View style={styles.field}>
+              <Text style={styles.label}>Agent</Text>
+              <Pressable style={styles.fieldButton} onPress={() => setShowAgentPicker(true)}>
+                <AgentIcon agentId={selectedAgent.id} size={16} />
+                <Text style={styles.fieldButtonText} numberOfLines={1}>
+                  {selectedAgent.label}
+                </Text>
+                <ChevronDown size={14} color={colors.textMuted} />
+              </Pressable>
+            </View>
 
-                {/* Agent */}
-                <View style={styles.field}>
-                  <Text style={styles.label}>Agent</Text>
-                  <Pressable style={styles.fieldButton} onPress={() => setShowAgentPicker(true)}>
-                    <AgentIcon agentId={selectedAgent.id} size={16} />
-                    <Text style={styles.fieldButtonText} numberOfLines={1}>
-                      {selectedAgent.label}
-                    </Text>
-                    <ChevronDown size={14} color={colors.textMuted} />
-                  </Pressable>
-                </View>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
 
-                {error ? <Text style={styles.error}>{error}</Text> : null}
-
-                <View style={styles.actions}>
-                  <Pressable style={styles.cancelButton} onPress={onClose}>
-                    <Text style={styles.cancelText}>Cancel</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.createButton, !canCreate && styles.createButtonDisabled]}
-                    disabled={!canCreate}
-                    onPress={() => void handleCreate()}
-                  >
-                    {creating ? (
-                      <ActivityIndicator size="small" color={colors.bgBase} />
-                    ) : (
-                      <Text style={styles.createText}>Create</Text>
-                    )}
-                  </Pressable>
-                </View>
-              </>
-            )}
-          </View>
-        </Pressable>
-      </Modal>
+            <View style={styles.actions}>
+              <Pressable style={styles.cancelButton} onPress={onClose}>
+                <Text style={styles.cancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.createButton, !canCreate && styles.createButtonDisabled]}
+                disabled={!canCreate}
+                onPress={() => void handleCreate()}
+              >
+                {creating ? (
+                  <ActivityIndicator size="small" color={colors.bgBase} />
+                ) : (
+                  <Text style={styles.createText}>Create</Text>
+                )}
+              </Pressable>
+            </View>
+          </>
+        )}
+      </BottomDrawer>
 
       {/* Sub-modals for pickers — rendered outside the main modal so they
           layer on top and scroll without touch conflicts. */}
@@ -458,37 +442,6 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end'
-  },
-  drawer: {
-    backgroundColor: colors.bgBase,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.xl + spacing.md,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -2 },
-        shadowOpacity: 0.2,
-        shadowRadius: 10
-      },
-      android: { elevation: 8 }
-    })
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.textMuted,
-    marginTop: spacing.sm,
-    marginBottom: spacing.md,
-    opacity: 0.4
-  },
   header: {
     paddingHorizontal: spacing.xs,
     marginBottom: spacing.md
@@ -597,38 +550,6 @@ const styles = StyleSheet.create({
   },
 
   // Picker sub-modal styles
-  pickerBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end'
-  },
-  pickerDrawer: {
-    backgroundColor: colors.bgBase,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.xl + spacing.md,
-    maxHeight: '70%',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -2 },
-        shadowOpacity: 0.2,
-        shadowRadius: 10
-      },
-      android: { elevation: 8 }
-    })
-  },
-  pickerHandle: {
-    alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.textMuted,
-    marginTop: spacing.sm,
-    marginBottom: spacing.md,
-    opacity: 0.4
-  },
   pickerHeader: {
     paddingHorizontal: spacing.xs,
     paddingBottom: spacing.sm

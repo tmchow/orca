@@ -1,6 +1,7 @@
-import { Modal, View, Text, Pressable, StyleSheet, Platform } from 'react-native'
+import { View, Text, Pressable, StyleSheet } from 'react-native'
 import { Check } from 'lucide-react-native'
 import { colors, spacing, typography } from '../theme/mobile-theme'
+import { BottomDrawer } from './BottomDrawer'
 
 export type PickerOption<T extends string = string> = {
   value: T
@@ -26,78 +27,41 @@ export function PickerModal<T extends string = string>({
   onClose
 }: Props<T>) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <View style={styles.drawer}>
-          <View style={styles.handle} />
+    <BottomDrawer visible={visible} onClose={onClose}>
+      <View style={styles.header}>
+        <Text style={styles.title}>{title}</Text>
+      </View>
 
-          <View style={styles.header}>
-            <Text style={styles.title}>{title}</Text>
-          </View>
-
-          <View style={styles.group}>
-            {options.map((opt, i) => {
-              const isSelected = opt.value === selected
-              return (
-                <View key={opt.value}>
-                  {i > 0 && <View style={styles.separator} />}
-                  <Pressable
-                    style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-                    onPress={() => {
-                      onSelect(opt.value)
-                      onClose()
-                    }}
-                  >
-                    <View style={styles.rowContent}>
-                      <Text style={[styles.rowLabel, isSelected && styles.rowLabelSelected]}>
-                        {opt.label}
-                      </Text>
-                      {opt.subtitle ? <Text style={styles.rowSubtitle}>{opt.subtitle}</Text> : null}
-                    </View>
-                    {isSelected && <Check size={16} color={colors.textPrimary} />}
-                  </Pressable>
+      <View style={styles.group}>
+        {options.map((opt, i) => {
+          const isSelected = opt.value === selected
+          return (
+            <View key={opt.value}>
+              {i > 0 && <View style={styles.separator} />}
+              <Pressable
+                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                onPress={() => {
+                  onSelect(opt.value)
+                  onClose()
+                }}
+              >
+                <View style={styles.rowContent}>
+                  <Text style={[styles.rowLabel, isSelected && styles.rowLabelSelected]}>
+                    {opt.label}
+                  </Text>
+                  {opt.subtitle ? <Text style={styles.rowSubtitle}>{opt.subtitle}</Text> : null}
                 </View>
-              )
-            })}
-          </View>
-        </View>
-      </Pressable>
-    </Modal>
+                {isSelected && <Check size={16} color={colors.textPrimary} />}
+              </Pressable>
+            </View>
+          )
+        })}
+      </View>
+    </BottomDrawer>
   )
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end'
-  },
-  drawer: {
-    backgroundColor: colors.bgBase,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.xl + spacing.md,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -2 },
-        shadowOpacity: 0.2,
-        shadowRadius: 10
-      },
-      android: { elevation: 8 }
-    })
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.textMuted,
-    marginTop: spacing.sm,
-    marginBottom: spacing.md,
-    opacity: 0.4
-  },
   header: {
     paddingHorizontal: spacing.xs,
     paddingBottom: spacing.sm

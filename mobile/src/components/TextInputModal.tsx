@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Modal, View, Text, TextInput, Pressable, StyleSheet, Platform } from 'react-native'
+import { View, Text, TextInput, Pressable, StyleSheet, Platform } from 'react-native'
 import { colors, spacing, radii, typography } from '../theme/mobile-theme'
+import { BottomDrawer } from './BottomDrawer'
 
 type Props = {
   visible: boolean
@@ -34,91 +35,54 @@ export function TextInputModal({
   }
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
-      <Pressable style={styles.backdrop} onPress={onCancel}>
-        <View style={styles.drawer}>
-          <View style={styles.handle} />
+    <BottomDrawer visible={visible} onClose={onCancel}>
+      <View style={styles.header}>
+        <Text style={styles.title}>{title}</Text>
+        {message ? <Text style={styles.message}>{message}</Text> : null}
+      </View>
 
-          <View style={styles.header}>
-            <Text style={styles.title}>{title}</Text>
-            {message ? <Text style={styles.message}>{message}</Text> : null}
-          </View>
-
-          <View style={styles.group}>
-            <View style={styles.inputWrap}>
-              <TextInput
-                style={styles.input}
-                value={value}
-                onChangeText={setValue}
-                placeholder={placeholder}
-                placeholderTextColor={colors.textMuted}
-                autoFocus
-                autoCapitalize="none"
-                autoCorrect={false}
-                returnKeyType="done"
-                onSubmitEditing={handleSubmit}
-                selectionColor={colors.accentBlue}
-              />
-            </View>
-          </View>
-
-          <View style={styles.actions}>
-            <Pressable
-              style={({ pressed }) => [styles.cancelButton, pressed && styles.buttonPressed]}
-              onPress={onCancel}
-            >
-              <Text style={styles.cancelText}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [
-                styles.submitButton,
-                pressed && styles.buttonPressed,
-                !value.trim() && styles.submitButtonDisabled
-              ]}
-              disabled={!value.trim()}
-              onPress={handleSubmit}
-            >
-              <Text style={styles.submitText}>Save</Text>
-            </Pressable>
-          </View>
+      <View style={styles.group}>
+        <View style={styles.inputWrap}>
+          <TextInput
+            style={styles.input}
+            value={value}
+            onChangeText={setValue}
+            placeholder={placeholder}
+            placeholderTextColor={colors.textMuted}
+            autoFocus
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="done"
+            onSubmitEditing={handleSubmit}
+            selectionColor={colors.accentBlue}
+          />
         </View>
-      </Pressable>
-    </Modal>
+      </View>
+
+      <View style={styles.actions}>
+        <Pressable
+          style={({ pressed }) => [styles.cancelButton, pressed && styles.buttonPressed]}
+          onPress={onCancel}
+        >
+          <Text style={styles.cancelText}>Cancel</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [
+            styles.submitButton,
+            pressed && styles.buttonPressed,
+            !value.trim() && styles.submitButtonDisabled
+          ]}
+          disabled={!value.trim()}
+          onPress={handleSubmit}
+        >
+          <Text style={styles.submitText}>Save</Text>
+        </Pressable>
+      </View>
+    </BottomDrawer>
   )
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end'
-  },
-  drawer: {
-    backgroundColor: colors.bgBase,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.xl + spacing.md,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -2 },
-        shadowOpacity: 0.2,
-        shadowRadius: 10
-      },
-      android: { elevation: 8 }
-    })
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.textMuted,
-    marginTop: spacing.sm,
-    marginBottom: spacing.md,
-    opacity: 0.4
-  },
   header: {
     paddingHorizontal: spacing.xs,
     paddingBottom: spacing.sm

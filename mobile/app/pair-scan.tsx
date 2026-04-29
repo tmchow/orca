@@ -2,11 +2,24 @@ import { useState, useRef, useCallback } from 'react'
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 import { useRouter } from 'expo-router'
+import { Monitor, Settings, Smartphone } from 'lucide-react-native'
 import { decodePairingUrl } from '../src/transport/pairing'
 import { connect } from '../src/transport/rpc-client'
 import { saveHost, getNextHostName } from '../src/transport/host-store'
 import type { PairingOffer } from '../src/transport/types'
 import { colors, spacing, radii, typography } from '../src/theme/mobile-theme'
+
+function Step({ number, icon, text }: { number: number; icon: React.ReactNode; text: string }) {
+  return (
+    <View style={styles.step}>
+      <View style={styles.stepBadge}>
+        <Text style={styles.stepNumber}>{number}</Text>
+      </View>
+      <View style={styles.stepIcon}>{icon}</View>
+      <Text style={styles.stepText}>{text}</Text>
+    </View>
+  )
+}
 
 export default function PairScanScreen() {
   const router = useRouter()
@@ -107,9 +120,23 @@ export default function PairScanScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.instruction}>
-        Open Orca on your computer, go to Settings → Mobile, and scan the QR code shown there.
-      </Text>
+      <View style={styles.steps}>
+        <Step
+          number={1}
+          icon={<Monitor size={14} color={colors.textSecondary} />}
+          text="Open Orca on your computer"
+        />
+        <Step
+          number={2}
+          icon={<Settings size={14} color={colors.textSecondary} />}
+          text="Go to Settings → Mobile"
+        />
+        <Step
+          number={3}
+          icon={<Smartphone size={14} color={colors.textSecondary} />}
+          text="Point this camera at the QR code"
+        />
+      </View>
 
       {status === 'scanning' && (
         <CameraView
@@ -145,11 +172,36 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bgBase,
     padding: spacing.lg
   },
-  instruction: {
-    fontSize: 13,
+  steps: {
+    gap: spacing.sm,
+    marginBottom: spacing.lg
+  },
+  step: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm
+  },
+  stepBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: colors.bgRaised,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  stepNumber: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textSecondary
+  },
+  stepIcon: {
+    width: 20,
+    alignItems: 'center'
+  },
+  stepText: {
+    fontSize: typography.bodySize,
     color: colors.textSecondary,
-    marginBottom: spacing.lg,
-    lineHeight: 18
+    flex: 1
   },
   camera: {
     flex: 1,
