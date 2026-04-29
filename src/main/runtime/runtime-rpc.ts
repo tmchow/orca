@@ -142,6 +142,13 @@ export class OrcaRuntimeRpcServer {
               onReady: (ch) => {
                 if (ch.deviceToken) {
                   wsTransport.setClientId(ws, ch.deviceToken)
+                  // Why: mark the device as actually connected so it appears
+                  // in the "Paired Devices" list. Devices that were only
+                  // generated as QR codes but never scanned stay hidden.
+                  const device = this.deviceRegistry?.validateToken(ch.deviceToken)
+                  if (device) {
+                    this.deviceRegistry?.updateLastSeen(device.deviceId)
+                  }
                 }
               },
               onError: (code, reason) => {

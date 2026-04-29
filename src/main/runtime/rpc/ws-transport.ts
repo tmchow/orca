@@ -70,13 +70,43 @@ export class WebSocketTransport implements RpcTransport {
       return
     }
 
-    // Why: React Native's built-in WebSocket cannot disable TLS verification
-    // for self-signed certificates. Until we implement certificate pinning on
-    // the mobile side, use plain ws:// which still has per-device token auth.
-    const httpServer =
-      this.tlsCert && this.tlsKey
-        ? createHttpsServer({ cert: this.tlsCert, key: this.tlsKey })
-        : createHttpServer()
+    // Why: when the preferred port is occupied (e.g. another Orca instance is
+    // already running), fall back to an OS-assigned port so mobile pairing
+    // still works. The QR code reads resolvedPort after start, so it will
+    // advertise the correct port regardless.
+    let port = this.port
+    try {
+      await this.tryListen(port)
+    } catch (error: unknown) {
+      if (isEAddressInUse(error) && port !== 0) {
+        console.warn(`[ws-transport] Port ${port} is in use, falling back to OS-assigned port`)
+        port = 0
+        await this.tryListen(port)
+      } else {
+        throw error
+      }
+    }
+  }
+
+  private createHttpServer(): HttpServer | HttpsServer {
+    return this.tlsCert && this.tlsKey
+      ? createHttpsServer({ cert: this.tlsCert, key: this.tlsKey })
+      : createHttpServer()
+  }
+
+  // Why: the WebSocketServer is attached only after listen succeeds. If we
+  // attached it before, the WSS would re-emit the EADDRINUSE error from the
+  // httpServer as an uncatchable exception, preventing the fallback from working.
+  private async tryListen(port: number): Promise<void> {
+    const httpServer = this.createHttpServer()
+
+    await new Promise<void>((resolve, reject) => {
+      httpServer.once('error', reject)
+      httpServer.listen(port, this.host, () => {
+        httpServer.off('error', reject)
+        resolve()
+      })
+    })
 
     const wss = new WebSocketServer({
       server: httpServer,
@@ -89,14 +119,6 @@ export class WebSocketTransport implements RpcTransport {
         return
       }
       this.handleConnection(ws)
-    })
-
-    await new Promise<void>((resolve, reject) => {
-      httpServer.once('error', reject)
-      httpServer.listen(this.port, this.host, () => {
-        httpServer.off('error', reject)
-        resolve()
-      })
     })
 
     this.httpServer = httpServer
@@ -164,4 +186,8 @@ export class WebSocketTransport implements RpcTransport {
       ws.close()
     })
   }
+}
+
+function isEAddressInUse(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'EADDRINUSE'
 }

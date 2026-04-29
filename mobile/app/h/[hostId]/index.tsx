@@ -85,8 +85,8 @@ const SORT_OPTIONS: PickerOption<SortMode>[] = [
 
 const GROUP_OPTIONS: PickerOption<GroupMode>[] = [
   { value: 'none', label: 'No Grouping' },
-  { value: 'repo', label: 'By Repository' },
-  { value: 'prStatus', label: 'By PR Status', subtitle: 'Linked PR vs none' }
+  { value: 'repo', label: 'Repository' },
+  { value: 'prStatus', label: 'PR Status' }
 ]
 
 function getWorktreeStatus(w: Worktree): 'working' | 'active' | 'permission' | 'done' | 'inactive' {
@@ -1213,7 +1213,7 @@ const styles = StyleSheet.create({
   },
   clearFiltersText: {
     fontSize: 13,
-    color: colors.accentBlue
+    color: colors.textSecondary
   },
   filterSectionLabel: {
     fontSize: 11,

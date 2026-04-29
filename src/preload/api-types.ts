@@ -940,7 +940,12 @@ export type PreloadApi = {
     ) => () => void
   }
   mobile: {
-    getPairingQR: () => Promise<
+    listNetworkInterfaces: () => Promise<{
+      interfaces: { name: string; address: string }[]
+    }>
+    getPairingQR: (args?: {
+      address?: string
+    }) => Promise<
       | { available: false }
       | { available: true; qrDataUrl: string; endpoint: string; deviceId: string }
     >

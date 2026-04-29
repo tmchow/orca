@@ -229,4 +229,28 @@ describe('WebSocketTransport', () => {
     const { transport } = await createTransport()
     await transport.stop()
   })
+
+  it('falls back to OS-assigned port when preferred port is in use', async () => {
+    const { transport: first, port } = await createTransport()
+    await first.start()
+
+    // Why: second transport requests the same port, which is now occupied.
+    // It should silently fall back to an OS-assigned port instead of throwing.
+    const tls = makeTls()
+    const second = new WebSocketTransport({
+      host: '127.0.0.1',
+      port,
+      tlsCert: tls.cert,
+      tlsKey: tls.key
+    })
+    transports.push(second)
+
+    await second.start()
+
+    expect(second.resolvedPort).not.toBe(port)
+    expect(second.resolvedPort).toBeGreaterThan(0)
+
+    const ws = await connectWs(second.resolvedPort)
+    ws.close()
+  })
 })

@@ -193,7 +193,8 @@ export function CustomKeyModal({ visible, onClose, onKeysChanged }: Props) {
               <Switch
                 value={macroEnter}
                 onValueChange={setMacroEnter}
-                trackColor={{ false: colors.bgRaised, true: colors.accentBlue }}
+                trackColor={{ false: colors.bgRaised, true: colors.textSecondary }}
+                thumbColor={colors.textPrimary}
               />
             </View>
             <Pressable
@@ -321,7 +322,7 @@ const styles = StyleSheet.create({
     color: colors.textPrimary
   },
   saveButton: {
-    backgroundColor: colors.accentBlue,
+    backgroundColor: colors.textPrimary,
     paddingVertical: spacing.sm + 2,
     borderRadius: radii.button,
     alignItems: 'center'
@@ -330,7 +331,7 @@ const styles = StyleSheet.create({
     opacity: 0.5
   },
   saveButtonText: {
-    color: '#fff',
+    color: colors.bgBase,
     fontSize: typography.bodySize,
     fontWeight: '600'
   }
