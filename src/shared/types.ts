@@ -659,6 +659,11 @@ export type WorktreeSetupLaunch = {
   envVars: Record<string, string>
 }
 
+export type WorktreeStartupLaunch = {
+  command: string
+  env?: Record<string, string>
+}
+
 export type CreateWorktreeArgs = {
   repoId: string
   name: string

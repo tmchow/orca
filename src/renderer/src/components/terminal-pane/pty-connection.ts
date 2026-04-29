@@ -11,7 +11,7 @@ import { shouldSeedCacheTimerOnInitialTitle } from './cache-timer-seeding'
 import type { PtyConnectionDeps } from './pty-connection-types'
 import { safeFit } from '@/lib/pane-manager/pane-tree-ops'
 import { getFitOverrideForPane, bindPanePtyId } from '@/lib/pane-manager/mobile-fit-overrides'
-import { isPaneReplaying, replayIntoTerminal } from './replay-guard'
+import { isPaneReplaying, replayIntoTerminal, replayIntoTerminalAsync } from './replay-guard'
 import {
   paneLeafId,
   POST_REPLAY_MODE_RESET,
@@ -564,8 +564,16 @@ export function connectPanePty(
       // Why: mobile terminal streaming needs the exact screen state from
       // xterm.js. Register a serializer for this ptyId so the main process
       // can request a buffer snapshot when a mobile client subscribes.
-      const unregisterSerializer = registerPtySerializer(ptyId, () => {
+      const unregisterSerializer = registerPtySerializer(ptyId, async () => {
         try {
+          const pending = deps.pendingWritesRef.current.get(pane.id)
+          if (pending) {
+            deps.pendingWritesRef.current.set(pane.id, '')
+            // Why: hidden/background panes buffer PTY output instead of writing
+            // to xterm. Mobile snapshots must include that pending output, and
+            // replay guard prevents xterm query auto-replies from hitting stdin.
+            await replayIntoTerminalAsync(pane, deps.replayingPanesRef, pending)
+          }
           return {
             data: pane.serializeAddon.serialize(),
             cols: pane.terminal.cols,

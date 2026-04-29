@@ -14,7 +14,7 @@ import { join } from 'path'
 import { rm } from 'fs/promises'
 import { OrchestrationDb } from './orchestration/db'
 import { formatMessagesForInjection } from './orchestration/formatter'
-import type { CreateWorktreeResult, Repo } from '../../shared/types'
+import type { CreateWorktreeResult, Repo, WorktreeStartupLaunch } from '../../shared/types'
 import { isFolderRepo } from '../../shared/repo-kind'
 import type {
   RuntimeGraphStatus,
@@ -106,6 +106,7 @@ import {
   areWorktreePathsEqual
 } from '../ipc/worktree-logic'
 import { invalidateAuthorizedRootsCache } from '../ipc/filesystem-auth'
+import { HeadlessEmulator } from '../daemon/headless-emulator'
 
 type RuntimeStore = {
   getRepos: Store['getRepos']
@@ -153,6 +154,11 @@ type RuntimePtyWorktreeRecord = {
   preview: string
 }
 
+type RuntimeHeadlessTerminal = {
+  emulator: HeadlessEmulator
+  writeChain: Promise<void>
+}
+
 type RuntimePtyController = {
   write(ptyId: string, data: string): boolean
   kill(ptyId: string): boolean
@@ -166,7 +172,12 @@ type RuntimePtyController = {
 type RuntimeNotifier = {
   worktreesChanged(repoId: string): void
   reposChanged(): void
-  activateWorktree(repoId: string, worktreeId: string, setup?: CreateWorktreeResult['setup']): void
+  activateWorktree(
+    repoId: string,
+    worktreeId: string,
+    setup?: CreateWorktreeResult['setup'],
+    startup?: WorktreeStartupLaunch
+  ): void
   createTerminal(worktreeId: string, opts: { command?: string; title?: string }): void
   splitTerminal(
     tabId: string,
@@ -271,6 +282,7 @@ export class OrcaRuntimeService {
   private dataListeners = new Map<string, Set<(data: string) => void>>()
   private subscriptionCleanups = new Map<string, () => void>()
   private ptysById = new Map<string, RuntimePtyWorktreeRecord>()
+  private headlessTerminals = new Map<string, RuntimeHeadlessTerminal>()
   // Why: mobile-fit overrides are keyed by ptyId (not terminal handle) because
   // handles can be reissued while the PTY identity is stable. In-memory only —
   // a stale phone override should not survive an app restart.
@@ -503,6 +515,7 @@ export class OrcaRuntimeService {
     // Agent detection runs on raw data before leaf processing, since the
     // tail buffer logic normalizes away the OSC sequences we need.
     this.agentDetector?.onData(ptyId, data, at)
+    this.trackHeadlessTerminalData(ptyId, data)
 
     // Why: extract OSC title from raw PTY data before tail-buffer processing
     // strips the escape sequences. Agent CLIs (Claude Code, Gemini, etc.)
@@ -584,11 +597,87 @@ export class OrcaRuntimeService {
   serializeTerminalBuffer(
     ptyId: string
   ): Promise<{ data: string; cols: number; rows: number } | null> {
-    return this.ptyController?.serializeBuffer?.(ptyId) ?? Promise.resolve(null)
+    return this.serializeTerminalBufferFromAvailableState(ptyId)
   }
 
   getTerminalSize(ptyId: string): { cols: number; rows: number } | null {
     return this.ptyController?.getSize?.(ptyId) ?? null
+  }
+
+  private trackHeadlessTerminalData(ptyId: string, data: string): void {
+    const state = this.getOrCreateHeadlessTerminal(ptyId)
+    state.writeChain = state.writeChain
+      .then(() => state.emulator.write(data))
+      .catch(() => {
+        // Best-effort state tracking; live streaming must continue even if
+        // xterm rejects a malformed or raced write during shutdown.
+      })
+  }
+
+  private getOrCreateHeadlessTerminal(ptyId: string): RuntimeHeadlessTerminal {
+    const existing = this.headlessTerminals.get(ptyId)
+    if (existing) {
+      return existing
+    }
+    const size = this.getTerminalSize(ptyId) ?? { cols: 80, rows: 24 }
+    const state: RuntimeHeadlessTerminal = {
+      emulator: new HeadlessEmulator({ cols: size.cols, rows: size.rows }),
+      writeChain: Promise.resolve()
+    }
+    this.headlessTerminals.set(ptyId, state)
+    return state
+  }
+
+  private resizeHeadlessTerminal(ptyId: string, cols: number, rows: number): void {
+    this.headlessTerminals.get(ptyId)?.emulator.resize(cols, rows)
+  }
+
+  private async serializeTerminalBufferFromAvailableState(
+    ptyId: string
+  ): Promise<{ data: string; cols: number; rows: number } | null> {
+    const headlessSnapshot = await this.serializeHeadlessTerminalBuffer(ptyId)
+    if (headlessSnapshot) {
+      return headlessSnapshot
+    }
+
+    let rendererSnapshot: { data: string; cols: number; rows: number } | null = null
+    try {
+      rendererSnapshot = await (this.ptyController?.serializeBuffer?.(ptyId) ??
+        Promise.resolve(null))
+    } catch {
+      // Why: mobile scrollback should not depend on a mounted renderer pane.
+      // If renderer serialization races reload/unmount, the runtime snapshot
+      // below can still preserve colored terminal state.
+    }
+    if (rendererSnapshot && rendererSnapshot.data.length > 0) {
+      return rendererSnapshot
+    }
+    return rendererSnapshot
+  }
+
+  private async serializeHeadlessTerminalBuffer(
+    ptyId: string
+  ): Promise<{ data: string; cols: number; rows: number } | null> {
+    const state = this.headlessTerminals.get(ptyId)
+    if (!state) {
+      return null
+    }
+    await state.writeChain
+    // Why: terminal.subscribe needs the current visible screen, not the full
+    // launch history. Full scrollback plus a normal-buffer TUI can replay the
+    // shell prompt and active TUI frame together, which looks duplicated.
+    const snapshot = state.emulator.getSnapshot({ scrollbackRows: 0 })
+    const data = snapshot.rehydrateSequences + snapshot.snapshotAnsi
+    return data.length > 0 ? { data, cols: snapshot.cols, rows: snapshot.rows } : null
+  }
+
+  private disposeHeadlessTerminal(ptyId: string): void {
+    const state = this.headlessTerminals.get(ptyId)
+    if (!state) {
+      return
+    }
+    this.headlessTerminals.delete(ptyId)
+    state.writeChain.finally(() => state.emulator.dispose()).catch(() => state.emulator.dispose())
   }
 
   resolveLeafForHandle(handle: string): { ptyId: string | null } | null {
@@ -662,6 +751,7 @@ export class OrcaRuntimeService {
         this.terminalFitOverrides.delete(ptyId)
         throw new Error('resize_failed')
       }
+      this.resizeHeadlessTerminal(ptyId, clampedCols, clampedRows)
 
       this.notifier?.terminalFitOverrideChanged(ptyId, 'mobile-fit', clampedCols, clampedRows)
 
@@ -697,6 +787,7 @@ export class OrcaRuntimeService {
     // current pane geometry, which is harmless (SIGWINCH is idempotent).
     if (prevCols != null && prevRows != null) {
       this.ptyController?.resize?.(ptyId, prevCols, prevRows)
+      this.resizeHeadlessTerminal(ptyId, prevCols, prevRows)
     }
 
     // Why: send the restored dimensions so the renderer can fall back to a
@@ -746,6 +837,7 @@ export class OrcaRuntimeService {
       this.terminalFitOverrides.delete(ptyId)
       this.notifier?.terminalFitOverrideChanged(ptyId, 'desktop-fit', 0, 0)
     }
+    this.disposeHeadlessTerminal(ptyId)
     this.agentDetector?.onExit(ptyId)
     const pty = this.ptysById.get(ptyId)
     if (pty) {
@@ -821,10 +913,23 @@ export class OrcaRuntimeService {
     const worktreesById = await this.getResolvedWorktreeMap()
     this.assertStableReadyGraph(graphEpoch)
 
+    const resolvedWorktrees = [...worktreesById.values()]
+    await this.refreshPtyWorktreeRecordsFromController(resolvedWorktrees)
+
+    const livePtyWorktreeIds = new Set<string>()
+    for (const pty of this.ptysById.values()) {
+      if (pty.connected) {
+        livePtyWorktreeIds.add(pty.worktreeId)
+      }
+    }
+
     const terminals: RuntimeTerminalSummary[] = []
     const ptyIdsFromLeaves = new Set<string>()
     for (const leaf of this.leaves.values()) {
       if (targetWorktreeId && leaf.worktreeId !== targetWorktreeId) {
+        continue
+      }
+      if (!leaf.ptyId && livePtyWorktreeIds.has(leaf.worktreeId)) {
         continue
       }
       if (leaf.ptyId) {
@@ -833,8 +938,6 @@ export class OrcaRuntimeService {
       terminals.push(this.buildTerminalSummary(leaf, worktreesById))
     }
 
-    const resolvedWorktrees = [...worktreesById.values()]
-    await this.refreshPtyWorktreeRecordsFromController(resolvedWorktrees)
     // Why: worktree.ps can classify active worktrees from PTY records even when
     // the renderer graph is missing a leaf. terminal.list needs the same fallback
     // so mobile does not show a false "No terminals" create flow.
@@ -1492,7 +1595,11 @@ export class OrcaRuntimeService {
     // renderer-side consequence of activating a worktree. CLI-created
     // worktrees must trigger that same activation path or they will exist on
     // disk without becoming the active workspace in the UI.
-    this.notifier?.activateWorktree(repo.id, worktree.id, setup)
+    if (args.startup) {
+      this.notifier?.activateWorktree(repo.id, worktree.id, setup, args.startup)
+    } else {
+      this.notifier?.activateWorktree(repo.id, worktree.id, setup)
+    }
     this.invalidateResolvedWorktreeCache()
     // Why: the filesystem-auth layer maintains a separate cache of registered
     // worktree roots used by git IPC handlers (branchCompare, diff, status, etc.)

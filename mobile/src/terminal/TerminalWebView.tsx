@@ -1,25 +1,27 @@
 import { useRef, useCallback, forwardRef, useImperativeHandle } from 'react'
-import { StyleSheet } from 'react-native'
+import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native'
 import { WebView } from 'react-native-webview'
 import type { WebViewMessageEvent } from 'react-native-webview'
 import { colors } from '../theme/mobile-theme'
 
 export type TerminalWebViewHandle = {
   write: (data: string) => void
-  init: (cols: number, rows: number) => void
+  init: (cols: number, rows: number, initialData?: string) => void
   clear: () => void
   measureFitDimensions: () => Promise<{ cols: number; rows: number } | null>
   resetZoom: () => void
 }
 
-type Props = object
+type Props = {
+  style?: StyleProp<ViewStyle>
+}
 
 type TerminalMessage =
-  | { type: 'write'; data: string }
-  | { type: 'init'; cols: number; rows: number }
-  | { type: 'clear' }
-  | { type: 'measure' }
-  | { type: 'reset-zoom' }
+  | { type: 'write'; id?: number; data: string }
+  | { type: 'init'; id?: number; cols: number; rows: number; initialData?: string }
+  | { type: 'clear'; id?: number }
+  | { type: 'measure'; id?: number }
+  | { type: 'reset-zoom'; id?: number }
 
 // Why: TUI apps (Claude Code / Ink) emit escape codes with absolute cursor
 // positioning designed for the desktop's terminal dimensions (~150+ cols).
@@ -35,7 +37,7 @@ const XTERM_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.1.0-beta.198/css/xterm.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -61,18 +63,24 @@ const XTERM_HTML = `<!DOCTYPE html>
 <div id="terminal-container">
   <div id="terminal-surface"></div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.1.0-beta.198/lib/xterm.min.js"></script>
 <script>
 (function() {
   var surface = document.getElementById('terminal-surface');
+  var ESC = String.fromCharCode(27);
   var term = null;
   var writeQueue = [];
+  var writesDraining = false;
+  var afterDrainCallbacks = [];
   var ready = false;
   var currentScale = 1;
   var userScale = 1;
   var panX = 0;
   var panY = 0;
   var initRows = 24;
+  var terminalGeneration = 0;
+  var activeAltScreenSnapshot = false;
+  var handledMessageIds = [];
 
   function computeFitScale() {
     if (!term) return 1;
@@ -131,6 +139,10 @@ const XTERM_HTML = `<!DOCTYPE html>
   // original init row count to avoid clipping active terminal content.
   function adjustRowsForViewport() {
     if (!term || !term.element) return;
+    // Why: active alternate-screen TUIs (Claude Code, vim, etc.) are exact
+    // screen snapshots. Locally resizing the mobile xterm after replay can
+    // mutate the alt buffer and drop cell attributes, which shows as white text.
+    if (activeAltScreenSnapshot) return;
     var cellHeight = getCellHeight();
     if (cellHeight > 0 && currentScale > 0) {
       var vpHeight = window.innerHeight;
@@ -154,10 +166,56 @@ const XTERM_HTML = `<!DOCTYPE html>
     adjustRowsForViewport();
   }
 
-  function init(cols, rows) {
+  function isAltScreenActive(data) {
+    if (typeof data !== 'string') return false;
+    var on = data.lastIndexOf(ESC + '[?1049h');
+    var off = data.lastIndexOf(ESC + '[?1049l');
+    return on !== -1 && on > off;
+  }
+
+  function normalizeInitialData(data) {
+    if (!isAltScreenActive(data)) return data;
+    var on = data.lastIndexOf(ESC + '[?1049h');
+    // Why: SerializeAddon can include normal-buffer scrollback before the
+    // active alternate-screen snapshot. Replaying both into a fresh mobile
+    // xterm duplicates TUI frames and can flatten SGR attributes.
+    return on > 0 ? data.slice(on) : data;
+  }
+
+  function pumpWrites(gen) {
+    if (!ready || !term || writesDraining || gen !== terminalGeneration) return;
+    var next = writeQueue.shift();
+    if (typeof next !== 'string') {
+      var callbacks = afterDrainCallbacks;
+      afterDrainCallbacks = [];
+      for (var i = 0; i < callbacks.length; i++) callbacks[i]();
+      return;
+    }
+    writesDraining = true;
+    // Why: xterm.write() parses asynchronously. Row adjustment/resizing must
+    // wait until replayed SGR attributes have landed in the buffer.
+    term.write(next, function() {
+      if (gen !== terminalGeneration) return;
+      writesDraining = false;
+      pumpWrites(gen);
+    });
+  }
+
+  function afterWritesDrained(callback) {
+    afterDrainCallbacks.push(callback);
+    pumpWrites(terminalGeneration);
+  }
+
+  function init(cols, rows, initialData) {
+    terminalGeneration++;
+    var gen = terminalGeneration;
     ready = false;
     writeQueue = [];
+    writesDraining = false;
+    afterDrainCallbacks = [];
     initRows = rows || 24;
+    var replayData = normalizeInitialData(initialData);
+    activeAltScreenSnapshot = isAltScreenActive(replayData);
     if (term) term.dispose();
 
     term = new Terminal({
@@ -197,6 +255,9 @@ const XTERM_HTML = `<!DOCTYPE html>
       allowProposedApi: true
     });
     term.open(surface);
+    if (typeof replayData === 'string' && replayData.length > 0) {
+      writeQueue.push(replayData);
+    }
 
     // Why: prevent taps from being interpreted as cursor positioning or
     // mouse-report events by the TUI running in the terminal. On mobile
@@ -337,22 +398,19 @@ const XTERM_HTML = `<!DOCTYPE html>
     }, { capture: true, passive: true });
 
     requestAnimationFrame(function() {
+      if (gen !== terminalGeneration) return;
       ready = true;
-      for (var i = 0; i < writeQueue.length; i++) {
-        term.write(writeQueue[i]);
-      }
-      writeQueue = [];
-      applyFitScale();
-      notify({ type: 'ready', cols: cols, rows: rows });
+      afterWritesDrained(function() {
+        if (gen !== terminalGeneration) return;
+        applyFitScale();
+        notify({ type: 'ready', cols: cols, rows: rows });
+      });
     });
   }
 
   function write(data) {
-    if (ready && term) {
-      term.write(data);
-    } else {
-      writeQueue.push(data);
-    }
+    writeQueue.push(data);
+    pumpWrites(terminalGeneration);
   }
 
   function notify(msg) {
@@ -388,12 +446,18 @@ const XTERM_HTML = `<!DOCTYPE html>
   }
 
   function handleMsg(msg) {
+    if (typeof msg.id === 'number') {
+      if (handledMessageIds.indexOf(msg.id) !== -1) return;
+      handledMessageIds.push(msg.id);
+      if (handledMessageIds.length > 256) handledMessageIds.shift();
+    }
     if (msg.type === 'init') {
-      init(msg.cols, msg.rows);
+      init(msg.cols, msg.rows, msg.initialData);
     } else if (msg.type === 'write') {
       write(msg.data);
     } else if (msg.type === 'clear') {
       writeQueue = [];
+      afterDrainCallbacks = [];
       if (term) { term.clear(); term.reset(); }
     } else if (msg.type === 'measure') {
       measureFitDimensions();
@@ -430,117 +494,120 @@ const XTERM_HTML = `<!DOCTYPE html>
 </body>
 </html>`
 
-export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(
-  function TerminalWebView(_props, ref) {
-    const webViewRef = useRef<WebView>(null)
-    const isWebReadyRef = useRef(false)
-    const pendingMessagesRef = useRef<TerminalMessage[]>([])
-    const measureResolveRef = useRef<
-      ((result: { cols: number; rows: number } | null) => void) | null
-    >(null)
+export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function TerminalWebView(
+  { style },
+  ref
+) {
+  const webViewRef = useRef<WebView>(null)
+  const isWebReadyRef = useRef(false)
+  const pendingMessagesRef = useRef<TerminalMessage[]>([])
+  const messageIdRef = useRef(0)
+  const measureResolveRef = useRef<
+    ((result: { cols: number; rows: number } | null) => void) | null
+  >(null)
 
-    const sendToWebView = useCallback((msg: TerminalMessage) => {
-      webViewRef.current?.postMessage(JSON.stringify(msg))
-    }, [])
+  const sendToWebView = useCallback((msg: TerminalMessage) => {
+    messageIdRef.current += 1
+    webViewRef.current?.postMessage(JSON.stringify({ ...msg, id: messageIdRef.current }))
+  }, [])
 
-    const flushPendingMessages = useCallback(() => {
-      const pending = pendingMessagesRef.current
-      pendingMessagesRef.current = []
-      for (const msg of pending) {
-        sendToWebView(msg)
+  const flushPendingMessages = useCallback(() => {
+    const pending = pendingMessagesRef.current
+    pendingMessagesRef.current = []
+    for (const msg of pending) {
+      sendToWebView(msg)
+    }
+  }, [sendToWebView])
+
+  const postMessage = useCallback(
+    (msg: TerminalMessage) => {
+      if (!isWebReadyRef.current) {
+        pendingMessagesRef.current.push(msg)
+        return
       }
-    }, [sendToWebView])
+      sendToWebView(msg)
+    },
+    [sendToWebView]
+  )
 
-    const postMessage = useCallback(
-      (msg: TerminalMessage) => {
-        if (!isWebReadyRef.current) {
-          pendingMessagesRef.current.push(msg)
-          return
+  const handleMessage = useCallback(
+    (event: WebViewMessageEvent) => {
+      let msg: Record<string, unknown>
+      try {
+        msg = JSON.parse(event.nativeEvent.data) as Record<string, unknown>
+      } catch {
+        return
+      }
+
+      if (msg.type === 'web-ready') {
+        isWebReadyRef.current = true
+        flushPendingMessages()
+      } else if (msg.type === 'measure-result') {
+        const resolve = measureResolveRef.current
+        measureResolveRef.current = null
+        if (resolve) {
+          const cols = typeof msg.cols === 'number' ? msg.cols : null
+          const rows = typeof msg.rows === 'number' ? msg.rows : null
+          resolve(cols && rows && cols >= 20 && rows >= 8 ? { cols, rows } : null)
         }
-        sendToWebView(msg)
+      }
+    },
+    [flushPendingMessages]
+  )
+
+  const handleLoadStart = useCallback(() => {
+    isWebReadyRef.current = false
+  }, [])
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      write(data: string) {
+        postMessage({ type: 'write', data })
       },
-      [sendToWebView]
-    )
-
-    const handleMessage = useCallback(
-      (event: WebViewMessageEvent) => {
-        let msg: Record<string, unknown>
-        try {
-          msg = JSON.parse(event.nativeEvent.data) as Record<string, unknown>
-        } catch {
-          return
-        }
-
-        if (msg.type === 'web-ready') {
-          isWebReadyRef.current = true
-          flushPendingMessages()
-        } else if (msg.type === 'measure-result') {
-          const resolve = measureResolveRef.current
-          measureResolveRef.current = null
-          if (resolve) {
-            const cols = typeof msg.cols === 'number' ? msg.cols : null
-            const rows = typeof msg.rows === 'number' ? msg.rows : null
-            resolve(cols && rows && cols >= 20 && rows >= 8 ? { cols, rows } : null)
-          }
-        }
+      init(cols: number, rows: number, initialData?: string) {
+        postMessage({ type: 'init', cols, rows, initialData })
       },
-      [flushPendingMessages]
-    )
+      clear() {
+        postMessage({ type: 'clear' })
+      },
+      measureFitDimensions(): Promise<{ cols: number; rows: number } | null> {
+        if (!isWebReadyRef.current) return Promise.resolve(null)
+        return new Promise((resolve) => {
+          measureResolveRef.current = resolve
+          sendToWebView({ type: 'measure' })
+          // Why: if the WebView doesn't respond within 2s (e.g., xterm
+          // failed to load), resolve null so the caller can disable
+          // Fit to Phone rather than hanging indefinitely.
+          setTimeout(() => {
+            if (measureResolveRef.current === resolve) {
+              measureResolveRef.current = null
+              resolve(null)
+            }
+          }, 2000)
+        })
+      },
+      resetZoom() {
+        postMessage({ type: 'reset-zoom' })
+      }
+    }),
+    [postMessage, sendToWebView]
+  )
 
-    const handleLoadStart = useCallback(() => {
-      isWebReadyRef.current = false
-    }, [])
-
-    useImperativeHandle(
-      ref,
-      () => ({
-        write(data: string) {
-          postMessage({ type: 'write', data })
-        },
-        init(cols: number, rows: number) {
-          postMessage({ type: 'init', cols, rows })
-        },
-        clear() {
-          postMessage({ type: 'clear' })
-        },
-        measureFitDimensions(): Promise<{ cols: number; rows: number } | null> {
-          if (!isWebReadyRef.current) return Promise.resolve(null)
-          return new Promise((resolve) => {
-            measureResolveRef.current = resolve
-            sendToWebView({ type: 'measure' })
-            // Why: if the WebView doesn't respond within 2s (e.g., xterm
-            // failed to load), resolve null so the caller can disable
-            // Fit to Phone rather than hanging indefinitely.
-            setTimeout(() => {
-              if (measureResolveRef.current === resolve) {
-                measureResolveRef.current = null
-                resolve(null)
-              }
-            }, 2000)
-          })
-        },
-        resetZoom() {
-          postMessage({ type: 'reset-zoom' })
-        }
-      }),
-      [postMessage, sendToWebView]
-    )
-
-    return (
-      <WebView
-        ref={webViewRef}
-        source={{ html: XTERM_HTML }}
-        style={styles.webview}
-        originWhitelist={['*']}
-        javaScriptEnabled
-        scrollEnabled={true}
-        scalesPageToFit={false}
-        onLoadStart={handleLoadStart}
-        onMessage={handleMessage}
-      />
-    )
-  }
-)
+  return (
+    <WebView
+      ref={webViewRef}
+      source={{ html: XTERM_HTML }}
+      style={[styles.webview, style]}
+      originWhitelist={['*']}
+      javaScriptEnabled
+      scrollEnabled={true}
+      scalesPageToFit={false}
+      onLoadStart={handleLoadStart}
+      onMessage={handleMessage}
+    />
+  )
+})
 
 const styles = StyleSheet.create({
   webview: {

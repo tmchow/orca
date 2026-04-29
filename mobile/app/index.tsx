@@ -2,11 +2,11 @@ import { useState, useCallback, useEffect, useMemo } from 'react'
 import { View, Text, StyleSheet, Pressable, FlatList } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter, useFocusEffect } from 'expo-router'
-import * as Haptics from 'expo-haptics'
 import { MoreHorizontal, QrCode, Server } from 'lucide-react-native'
 import { loadHosts, removeHost, renameHost } from '../src/transport/host-store'
 import { connect } from '../src/transport/rpc-client'
 import type { ConnectionState, HostProfile } from '../src/transport/types'
+import { triggerMediumImpact } from '../src/platform/haptics'
 import { OrcaLogo } from '../src/components/OrcaLogo'
 import { StatusDot } from '../src/components/StatusDot'
 import { TextInputModal } from '../src/components/TextInputModal'
@@ -116,7 +116,7 @@ export default function HomeScreen() {
               style={({ pressed }) => [styles.hostCard, pressed && styles.hostCardPressed]}
               onPress={() => router.push(`/h/${item.id}`)}
               onLongPress={() => {
-                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+                triggerMediumImpact()
                 setActionTarget(item)
               }}
               delayLongPress={400}

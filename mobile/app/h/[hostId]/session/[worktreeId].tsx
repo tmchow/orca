@@ -12,11 +12,11 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import * as Haptics from 'expo-haptics'
 import { ArrowUp, ChevronLeft, Monitor, Plus, Smartphone } from 'lucide-react-native'
 import { connect, type RpcClient } from '../../../../src/transport/rpc-client'
 import { loadHosts } from '../../../../src/transport/host-store'
 import type { ConnectionState, RpcSuccess } from '../../../../src/transport/types'
+import { triggerMediumImpact } from '../../../../src/platform/haptics'
 import {
   TerminalWebView,
   type TerminalWebViewHandle
@@ -66,17 +66,43 @@ const STATUS_LABELS: Record<ConnectionState, string> = {
   'auth-failed': 'Auth failed'
 }
 
+function TerminalPaneView({
+  handle,
+  active,
+  onRef
+}: {
+  handle: string
+  active: boolean
+  onRef: (handle: string, ref: TerminalWebViewHandle | null) => void
+}) {
+  const setRef = useCallback(
+    (ref: TerminalWebViewHandle | null) => {
+      onRef(handle, ref)
+    },
+    [handle, onRef]
+  )
+
+  return (
+    <View
+      pointerEvents={active ? 'auto' : 'none'}
+      style={[styles.terminalPane, !active && styles.terminalPaneHidden]}
+    >
+      <TerminalWebView ref={setRef} style={styles.terminalWebView} />
+    </View>
+  )
+}
+
 export default function SessionScreen() {
   const {
     hostId,
     worktreeId,
     name: worktreeName,
-    agent: agentCommand
+    created
   } = useLocalSearchParams<{
     hostId: string
     worktreeId: string
     name?: string
-    agent?: string
+    created?: string
   }>()
   const router = useRouter()
   const [client, setClient] = useState<RpcClient | null>(null)
@@ -115,21 +141,39 @@ export default function SessionScreen() {
   // Why: tracks terminals the user explicitly restored to desktop size.
   // Without this, switching away and back would auto-fit them again.
   const manuallyRestoredRef = useRef<Set<string>>(new Set())
-  // Why: only auto-fit terminals created during this mobile session.
-  // Existing desktop terminals should keep their desktop dimensions until
-  // the user explicitly chooses "Fit to Phone".
-  const mobileCreatedHandlesRef = useRef<Set<string>>(new Set())
-  const agentCommandConsumedRef = useRef(false)
-  const termRef = useRef<TerminalWebViewHandle>(null)
-  const unsubRef = useRef<(() => void) | null>(null)
+  const terminalRefs = useRef<Map<string, TerminalWebViewHandle>>(new Map())
+  const terminalUnsubsRef = useRef<Map<string, () => void>>(new Map())
+  const subscribingHandlesRef = useRef<Set<string>>(new Set())
+  const initializedHandlesRef = useRef<Set<string>>(new Set())
+  const locallyCreatedHandlesRef = useRef<Set<string>>(new Set())
   const activeHandleRef = useRef<string | null>(null)
-  const subscribeSeqRef = useRef(0)
+  const subscribeSeqRef = useRef<Map<string, number>>(new Map())
 
   const canSend = connState === 'connected' && activeHandle != null
 
-  const formatLines = useCallback((lines: string[] | string | undefined) => {
-    const text = Array.isArray(lines) ? lines.join('\r\n') : (lines ?? '')
-    return text && Array.isArray(lines) ? `${text}\r\n` : text
+  const getTerminalRef = useCallback((handle: string | null) => {
+    return handle ? terminalRefs.current.get(handle) : undefined
+  }, [])
+
+  const unsubscribeTerminal = useCallback((handle: string) => {
+    terminalUnsubsRef.current.get(handle)?.()
+    terminalUnsubsRef.current.delete(handle)
+    subscribingHandlesRef.current.delete(handle)
+    subscribeSeqRef.current.set(handle, (subscribeSeqRef.current.get(handle) ?? 0) + 1)
+  }, [])
+
+  const clearTerminalCache = useCallback(() => {
+    for (const unsub of terminalUnsubsRef.current.values()) {
+      unsub()
+    }
+    terminalUnsubsRef.current.clear()
+    subscribingHandlesRef.current.clear()
+    initializedHandlesRef.current.clear()
+    locallyCreatedHandlesRef.current.clear()
+    subscribeSeqRef.current.clear()
+    for (const term of terminalRefs.current.values()) {
+      term.clear()
+    }
   }, [])
 
   // Why: after a fit/restore resize the PTY grid changes, so we must
@@ -139,20 +183,24 @@ export default function SessionScreen() {
   // takes effect.
   const resubscribeWithoutFocus = useCallback(
     (handle: string) => {
-      unsubRef.current?.()
+      unsubscribeTerminal(handle)
       if (!client) return
 
-      termRef.current?.clear()
-      const seq = subscribeSeqRef.current + 1
-      subscribeSeqRef.current = seq
+      const term = getTerminalRef(handle)
+      term?.clear()
+      initializedHandlesRef.current.delete(handle)
+      subscribingHandlesRef.current.add(handle)
+      const seq = (subscribeSeqRef.current.get(handle) ?? 0) + 1
+      subscribeSeqRef.current.set(handle, seq)
 
       void (async () => {
-        if (subscribeSeqRef.current !== seq || activeHandleRef.current !== handle) {
+        if (subscribeSeqRef.current.get(handle) !== seq) {
+          subscribingHandlesRef.current.delete(handle)
           return
         }
 
         const unsub = client.subscribe('terminal.subscribe', { terminal: handle }, (result) => {
-          if (subscribeSeqRef.current !== seq || activeHandleRef.current !== handle) {
+          if (subscribeSeqRef.current.get(handle) !== seq) {
             return
           }
           const data = result as Record<string, unknown>
@@ -162,21 +210,24 @@ export default function SessionScreen() {
             const initialData =
               typeof data.serialized === 'string' && data.serialized.length > 0
                 ? data.serialized
-                : formatLines(data.lines as string[] | string | undefined)
-            termRef.current?.init(cols, rows, initialData)
+                : ''
+            getTerminalRef(handle)?.init(cols, rows, initialData)
+            initializedHandlesRef.current.add(handle)
           } else if (data.type === 'data') {
-            termRef.current?.write(data.chunk as string)
+            const chunk = data.chunk as string
+            getTerminalRef(handle)?.write(chunk)
           }
         })
 
-        if (subscribeSeqRef.current === seq && activeHandleRef.current === handle) {
-          unsubRef.current = unsub
+        if (subscribeSeqRef.current.get(handle) === seq) {
+          terminalUnsubsRef.current.set(handle, unsub)
         } else {
           unsub()
         }
+        subscribingHandlesRef.current.delete(handle)
       })()
     },
-    [client, formatLines]
+    [client, getTerminalRef, unsubscribeTerminal]
   )
 
   // Why: extracted so both manual "Fit to Phone" and auto-fit-on-subscribe
@@ -187,7 +238,7 @@ export default function SessionScreen() {
       const clientId = deviceTokenRef.current
       if (!clientId) return
 
-      const dims = await termRef.current?.measureFitDimensions()
+      const dims = await getTerminalRef(handle)?.measureFitDimensions()
       if (!dims) return
 
       const response = await rpcClient.sendRequest('terminal.resizeForClient', {
@@ -201,9 +252,9 @@ export default function SessionScreen() {
 
       updateFittedHandles((prev) => new Set(prev).add(handle))
       resubscribeWithoutFocus(handle)
-      setTimeout(() => termRef.current?.resetZoom(), 500)
+      setTimeout(() => getTerminalRef(handle)?.resetZoom(), 500)
     },
-    [resubscribeWithoutFocus, updateFittedHandles]
+    [getTerminalRef, resubscribeWithoutFocus, updateFittedHandles]
   )
 
   const handleFitToPhone = useCallback(async () => {
@@ -239,11 +290,11 @@ export default function SessionScreen() {
         return next
       })
       resubscribeWithoutFocus(handle)
-      setTimeout(() => termRef.current?.resetZoom(), 500)
+      setTimeout(() => getTerminalRef(handle)?.resetZoom(), 500)
     } catch {
       // Restore failed — keep current state.
     }
-  }, [client, activeHandle, resubscribeWithoutFocus, updateFittedHandles])
+  }, [client, activeHandle, getTerminalRef, resubscribeWithoutFocus, updateFittedHandles])
 
   useEffect(() => {
     let rpcClient: RpcClient | null = null
@@ -259,28 +310,36 @@ export default function SessionScreen() {
     })()
 
     return () => {
-      unsubRef.current?.()
+      clearTerminalCache()
       rpcClient?.close()
     }
-  }, [hostId])
+  }, [clearTerminalCache, hostId])
 
   useEffect(() => {
-    unsubRef.current?.()
-    unsubRef.current = null
+    clearTerminalCache()
     activeHandleRef.current = null
     setActiveHandle(null)
     setTerminals([])
-    termRef.current?.clear()
-  }, [worktreeId])
+  }, [clearTerminalCache, worktreeId])
 
   const subscribeToTerminal = useCallback(
     (handle: string) => {
-      unsubRef.current?.()
-      if (!client) return
+      if (!client) {
+        return
+      }
+      if (terminalUnsubsRef.current.has(handle)) {
+        return
+      }
+      if (subscribingHandlesRef.current.has(handle)) {
+        return
+      }
+      if (!getTerminalRef(handle)) {
+        return
+      }
 
-      termRef.current?.clear()
-      const seq = subscribeSeqRef.current + 1
-      subscribeSeqRef.current = seq
+      subscribingHandlesRef.current.add(handle)
+      const seq = (subscribeSeqRef.current.get(handle) ?? 0) + 1
+      subscribeSeqRef.current.set(handle, seq)
       const rpcClient = client
 
       // Why: phone-fitted terminals skip terminal.focus (which would cause
@@ -291,11 +350,14 @@ export default function SessionScreen() {
       // If they don't match (desktop auto-restored while we were away),
       // we refit — but only then.
       const shouldAutoFit =
-        !manuallyRestoredRef.current.has(handle) &&
-        (mobileCreatedHandlesRef.current.has(handle) || fittedHandlesRef.current.has(handle))
+        !manuallyRestoredRef.current.has(handle) && fittedHandlesRef.current.has(handle)
 
       void (async () => {
-        if (!shouldAutoFit) {
+        if (
+          !shouldAutoFit &&
+          activeHandleRef.current === handle &&
+          !locallyCreatedHandlesRef.current.has(handle)
+        ) {
           try {
             await client.sendRequest('terminal.focus', { terminal: handle })
             await new Promise((resolve) => setTimeout(resolve, 150))
@@ -304,51 +366,62 @@ export default function SessionScreen() {
           }
         }
 
-        if (subscribeSeqRef.current !== seq || activeHandleRef.current !== handle) {
+        if (subscribeSeqRef.current.get(handle) !== seq) {
+          subscribingHandlesRef.current.delete(handle)
           return
         }
 
         const unsub = client.subscribe('terminal.subscribe', { terminal: handle }, (result) => {
-          if (subscribeSeqRef.current !== seq || activeHandleRef.current !== handle) {
+          if (subscribeSeqRef.current.get(handle) !== seq) {
             return
           }
           const data = result as Record<string, unknown>
           if (data.type === 'scrollback') {
+            if (initializedHandlesRef.current.has(handle)) {
+              return
+            }
             const cols = (data.cols as number) || 80
             const rows = (data.rows as number) || 24
             const initialData =
               typeof data.serialized === 'string' && data.serialized.length > 0
                 ? data.serialized
-                : formatLines(data.lines as string[] | string | undefined)
-            termRef.current?.init(cols, rows, initialData)
+                : ''
+            getTerminalRef(handle)?.init(cols, rows, initialData)
+            initializedHandlesRef.current.add(handle)
+            locallyCreatedHandlesRef.current.delete(handle)
             // Why: only refit if the scrollback geometry doesn't match
             // the phone WebView dimensions. This avoids unnecessary
             // resize→SIGWINCH cycles on tab switches when the terminal
             // is already at the correct phone size.
             if (shouldAutoFit && !fitPendingRef.current) {
               void (async () => {
-                const dims = await termRef.current?.measureFitDimensions()
+                const dims = await getTerminalRef(handle)?.measureFitDimensions()
                 if (!dims) return
                 if (cols !== dims.cols || rows !== dims.rows) {
-                  if (activeHandleRef.current === handle && subscribeSeqRef.current === seq) {
+                  if (
+                    activeHandleRef.current === handle &&
+                    subscribeSeqRef.current.get(handle) === seq
+                  ) {
                     void fitToPhoneCore(handle, rpcClient)
                   }
                 }
               })()
             }
           } else if (data.type === 'data') {
-            termRef.current?.write(data.chunk as string)
+            const chunk = data.chunk as string
+            getTerminalRef(handle)?.write(chunk)
           }
         })
 
-        if (subscribeSeqRef.current === seq && activeHandleRef.current === handle) {
-          unsubRef.current = unsub
+        if (subscribeSeqRef.current.get(handle) === seq) {
+          terminalUnsubsRef.current.set(handle, unsub)
         } else {
           unsub()
         }
+        subscribingHandlesRef.current.delete(handle)
       })()
     },
-    [client, formatLines, fitToPhoneCore]
+    [client, fitToPhoneCore, getTerminalRef]
   )
 
   const fetchTerminals = useCallback(
@@ -362,6 +435,14 @@ export default function SessionScreen() {
         })
         if (response.ok) {
           const result = (response as RpcSuccess).result as { terminals: Terminal[] }
+          const liveHandles = new Set(result.terminals.map((terminal) => terminal.handle))
+          for (const handle of Array.from(terminalUnsubsRef.current.keys())) {
+            if (!liveHandles.has(handle)) {
+              unsubscribeTerminal(handle)
+              terminalRefs.current.delete(handle)
+              initializedHandlesRef.current.delete(handle)
+            }
+          }
           const current = activeHandleRef.current
           if (current && result.terminals.length === 0) {
             return
@@ -381,11 +462,8 @@ export default function SessionScreen() {
               setActiveHandle(active.handle)
               subscribeToTerminal(active.handle)
             } else {
-              unsubRef.current?.()
-              unsubRef.current = null
               activeHandleRef.current = null
               setActiveHandle(null)
-              termRef.current?.clear()
             }
           }
         }
@@ -393,14 +471,17 @@ export default function SessionScreen() {
         // Failed to list terminals
       }
     },
-    [client, worktreeId, subscribeToTerminal]
+    [client, worktreeId, subscribeToTerminal, unsubscribeTerminal]
   )
 
   useEffect(() => {
     if (connState === 'connected') {
       setTerminalsLoaded(false)
       void (async () => {
-        if (client) {
+        // Why: worktree.create already asks the desktop renderer to activate
+        // with startup/setup payloads. A second plain activation can race ahead
+        // and create a blank first terminal before those payloads are applied.
+        if (client && created !== '1') {
           await client
             .sendRequest('worktree.activate', {
               worktree: `id:${worktreeId}`
@@ -410,9 +491,23 @@ export default function SessionScreen() {
         await fetchTerminals({ allowEmptyLoaded: false })
         setTimeout(() => void fetchTerminals({ allowEmptyLoaded: false }), 750)
         setTimeout(() => void fetchTerminals({ allowEmptyLoaded: true }), 1500)
+        if (client && created === '1') {
+          setTimeout(() => {
+            if (activeHandleRef.current) return
+            void (async () => {
+              await client
+                .sendRequest('worktree.activate', {
+                  worktree: `id:${worktreeId}`
+                })
+                .catch(() => null)
+              await fetchTerminals({ allowEmptyLoaded: true })
+              setTimeout(() => void fetchTerminals({ allowEmptyLoaded: true }), 750)
+            })()
+          }, 1800)
+        }
       })()
     }
-  }, [client, connState, fetchTerminals, worktreeId])
+  }, [client, connState, created, fetchTerminals, worktreeId])
 
   useEffect(() => {
     if (connState !== 'connected') return
@@ -422,52 +517,26 @@ export default function SessionScreen() {
     return () => clearInterval(interval)
   }, [connState, fetchTerminals])
 
-  // Why: when navigating here from the "New Worktree" modal with an agent
-  // command, create the terminal from the session page (not the modal) so
-  // it goes through the normal mobile-created → auto-fit-to-phone flow.
-  // The modal can't do this because the terminal would start at the desktop's
-  // default geometry before the mobile WebView is mounted.
-  useEffect(() => {
-    if (
-      !agentCommand ||
-      !client ||
-      connState !== 'connected' ||
-      !terminalsLoaded ||
-      agentCommandConsumedRef.current
-    ) {
-      return
-    }
-    agentCommandConsumedRef.current = true
-
-    void (async () => {
-      try {
-        const response = await client.sendRequest('terminal.create', {
-          worktree: `id:${worktreeId}`,
-          command: agentCommand
-        })
-        if (response.ok) {
-          const result = (response as RpcSuccess).result as TerminalCreateResult
-          const created = result.terminal
-          mobileCreatedHandlesRef.current.add(created.handle)
-          activeHandleRef.current = created.handle
-          setActiveHandle(created.handle)
-          setTerminals((prev) => [
-            ...prev,
-            { handle: created.handle, title: created.title || 'Terminal', isActive: true }
-          ])
-          subscribeToTerminal(created.handle)
-        }
-      } catch {
-        // Agent terminal creation failed — user can create manually via +
-      }
-    })()
-  }, [agentCommand, client, connState, terminalsLoaded, worktreeId, subscribeToTerminal])
-
   const switchTab = useCallback(
     (handle: string) => {
       activeHandleRef.current = handle
       setActiveHandle(handle)
+      if (!fittedHandlesRef.current.has(handle)) {
+        void client?.sendRequest('terminal.focus', { terminal: handle }).catch(() => null)
+      }
       subscribeToTerminal(handle)
+    },
+    [client, subscribeToTerminal]
+  )
+
+  const setTerminalWebViewRef = useCallback(
+    (handle: string, ref: TerminalWebViewHandle | null) => {
+      if (ref) {
+        terminalRefs.current.set(handle, ref)
+        subscribeToTerminal(handle)
+      } else {
+        terminalRefs.current.delete(handle)
+      }
     },
     [subscribeToTerminal]
   )
@@ -516,7 +585,7 @@ export default function SessionScreen() {
       if (response.ok) {
         const result = (response as RpcSuccess).result as TerminalCreateResult
         const created = result.terminal
-        mobileCreatedHandlesRef.current.add(created.handle)
+        locallyCreatedHandlesRef.current.add(created.handle)
         activeHandleRef.current = created.handle
         setActiveHandle(created.handle)
         setTerminals((prev) => [
@@ -569,6 +638,10 @@ export default function SessionScreen() {
         terminal: target.handle
       })
       if (response.ok) {
+        unsubscribeTerminal(target.handle)
+        terminalRefs.current.delete(target.handle)
+        initializedHandlesRef.current.delete(target.handle)
+        locallyCreatedHandlesRef.current.delete(target.handle)
         const next = terminals.filter((terminal) => terminal.handle !== target.handle)
         setTerminals(next)
         if (activeHandleRef.current === target.handle) {
@@ -577,10 +650,6 @@ export default function SessionScreen() {
           setActiveHandle(replacement?.handle ?? null)
           if (replacement) {
             subscribeToTerminal(replacement.handle)
-          } else {
-            unsubRef.current?.()
-            unsubRef.current = null
-            termRef.current?.clear()
           }
         }
         setTimeout(() => void fetchTerminals(), 300)
@@ -646,7 +715,7 @@ export default function SessionScreen() {
                   style={[styles.tab, t.handle === activeHandle && styles.tabActive]}
                   onPress={() => switchTab(t.handle)}
                   onLongPress={() => {
-                    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+                    triggerMediumImpact()
                     setActionTarget(t)
                   }}
                   delayLongPress={400}
@@ -696,7 +765,14 @@ export default function SessionScreen() {
         </View>
       ) : (
         <View style={styles.terminalFrame}>
-          <TerminalWebView ref={termRef} />
+          {terminals.map((terminal) => (
+            <TerminalPaneView
+              key={terminal.handle}
+              handle={terminal.handle}
+              active={terminal.handle === activeHandle}
+              onRef={setTerminalWebViewRef}
+            />
+          ))}
         </View>
       )}
 
@@ -912,7 +988,17 @@ const styles = StyleSheet.create({
   terminalFrame: {
     flex: 1,
     minHeight: 0,
+    position: 'relative',
     overflow: 'hidden'
+  },
+  terminalPane: {
+    ...StyleSheet.absoluteFillObject
+  },
+  terminalPaneHidden: {
+    opacity: 0
+  },
+  terminalWebView: {
+    flex: 1
   },
   emptyState: {
     flex: 1,

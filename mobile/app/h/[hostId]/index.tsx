@@ -10,7 +10,6 @@ import {
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import * as Haptics from 'expo-haptics'
 import {
   Search,
   X,
@@ -28,6 +27,7 @@ import {
 import { connect, type RpcClient } from '../../../src/transport/rpc-client'
 import { loadHosts, updateLastConnected, removeHost } from '../../../src/transport/host-store'
 import type { ConnectionState, RpcSuccess } from '../../../src/transport/types'
+import { triggerMediumImpact } from '../../../src/platform/haptics'
 import { StatusDot } from '../../../src/components/StatusDot'
 import { NewWorktreeModal } from '../../../src/components/NewWorktreeModal'
 import { AgentSpinner } from '../../../src/components/AgentSpinner'
@@ -606,7 +606,7 @@ export default function HostScreen() {
               disabled={isReadOnly}
               onPress={() => openWorktreeSession(item)}
               onLongPress={() => {
-                void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+                triggerMediumImpact()
                 setActionTarget(item)
               }}
               delayLongPress={400}
@@ -763,10 +763,9 @@ export default function HostScreen() {
       <NewWorktreeModal
         visible={showNewWorktree}
         client={client}
-        onCreated={(worktreeId, worktreeName, agentCommand) => {
+        onCreated={(worktreeId, worktreeName) => {
           void fetchWorktrees()
-          const params = new URLSearchParams({ name: worktreeName })
-          if (agentCommand) params.set('agent', agentCommand)
+          const params = new URLSearchParams({ name: worktreeName, created: '1' })
           router.push(`/h/${hostId}/session/${encodeURIComponent(worktreeId)}?${params.toString()}`)
         }}
         onClose={() => setShowNewWorktree(false)}

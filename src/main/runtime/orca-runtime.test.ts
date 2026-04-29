@@ -379,6 +379,96 @@ describe('OrcaRuntimeService', () => {
     expect(writes).toEqual(['continue', '\r'])
   })
 
+  it('serializes terminal state from runtime-tracked PTY output when renderer has no buffer', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      getSize: () => ({ cols: 100, rows: 30 }),
+      serializeBuffer: vi.fn().mockResolvedValue(null)
+    })
+
+    runtime.onPtyData('pty-1', '\x1b[31mred text\x1b[0m\n', 123)
+
+    const serialized = await runtime.serializeTerminalBuffer('pty-1')
+    expect(serialized).toMatchObject({ cols: 100, rows: 30 })
+    expect(serialized?.data).toContain('red text')
+    expect(serialized?.data).toContain('[31m')
+  })
+
+  it('prefers runtime-tracked screen snapshots over renderer scrollback snapshots', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      getSize: () => ({ cols: 100, rows: 30 }),
+      serializeBuffer: vi.fn().mockResolvedValue({
+        data: 'renderer scrollback that should not win',
+        cols: 100,
+        rows: 30
+      })
+    })
+
+    runtime.onPtyData('pty-1', '\x1b[32mruntime screen\x1b[0m\n', 123)
+
+    const serialized = await runtime.serializeTerminalBuffer('pty-1')
+    expect(serialized?.data).toContain('runtime screen')
+    expect(serialized?.data).not.toContain('renderer scrollback')
+  })
+
+  it('does not list renderer placeholder leaves alongside live PTY fallback terminals', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      listProcesses: vi.fn().mockResolvedValue([
+        { id: 'pty-1', cwd: '/tmp/worktree-a', title: 'setup' },
+        { id: 'pty-2', cwd: '/tmp/worktree-a', title: 'Claude Code' }
+      ])
+    })
+
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, {
+      tabs: [
+        {
+          tabId: 'tab-setup',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          title: 'setup',
+          activeLeafId: 'pane:1',
+          layout: null
+        },
+        {
+          tabId: 'tab-claude',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          title: 'Claude Code',
+          activeLeafId: 'pane:2',
+          layout: null
+        }
+      ],
+      leaves: [
+        {
+          tabId: 'tab-setup',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          leafId: 'pane:1',
+          paneRuntimeId: 1,
+          ptyId: null
+        },
+        {
+          tabId: 'tab-claude',
+          worktreeId: 'repo-1::/tmp/worktree-a',
+          leafId: 'pane:2',
+          paneRuntimeId: 2,
+          ptyId: null
+        }
+      ]
+    })
+
+    const terminals = await runtime.listTerminals('branch:feature/foo')
+    expect(terminals.terminals).toHaveLength(2)
+    expect(terminals.terminals.every((terminal) => terminal.connected)).toBe(true)
+    expect(new Set(terminals.terminals.map((terminal) => terminal.handle)).size).toBe(2)
+  })
+
   it('waits for terminal exit and resolves with the exit status', async () => {
     const runtime = new OrcaRuntimeService(store)
 

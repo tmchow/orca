@@ -236,7 +236,8 @@ describe('connectPanePty', () => {
         },
         pty: {
           signal: vi.fn(),
-          ackColdRestore: vi.fn()
+          ackColdRestore: vi.fn(),
+          onSerializeBufferRequest: vi.fn(() => vi.fn())
         },
         notifications: {
           dispatch: vi.fn()

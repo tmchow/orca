@@ -114,6 +114,18 @@ readSawMarker: true
 
 If this repro fails, debug the desktop runtime/PTY path before the mobile WebView. If it passes but the phone is blank, debug the session screen or `TerminalWebView` readiness/queueing path.
 
+## Terminal Color Repro Without A Phone
+
+Use this when terminal colors disappear after switching tabs. Open a Claude Code terminal and at least one other terminal in the target worktree, then run:
+
+```bash
+cd mobile
+ORCA_MOBILE_WS_URL=ws://127.0.0.1:6768 pnpm exec tsx scripts/repro-terminal-colors.ts \
+  <deviceToken> <serverPublicKeyB64> "id:<worktreeId>"
+```
+
+The script captures `terminal.subscribe` snapshots in an A → B → A sequence and writes raw snapshots to `mobile/terminal-color-repro/`. If the two A snapshots have different `sgrColor` counts, the desktop snapshot changed during the switch. If they match, the ANSI color data is still present and the bug is in mobile replay/rendering.
+
 ## Validation
 
 Run these checks before committing mobile terminal changes:

@@ -12,16 +12,24 @@ nacl.setPRNG((_x: Uint8Array, n: number) => {
   _x.set(bytes)
 })
 
-export function generateKeyPair(): nacl.BoxKeyPair {
-  return nacl.box.keyPair()
+// Why: tweetnacl uses `instanceof Uint8Array` checks internally. On Hermes,
+// values from native modules (expo-crypto), TextEncoder, or typed array
+// operations can return objects that fail this check despite being
+// functionally identical. Wrapping with `new Uint8Array(x)` guarantees
+// the correct prototype chain.
+function u8(x: Uint8Array): Uint8Array {
+  return new Uint8Array(x)
+}
+
+export function generateKeyPair(): { publicKey: Uint8Array; secretKey: Uint8Array } {
+  const kp = nacl.box.keyPair()
+  return { publicKey: u8(kp.publicKey), secretKey: u8(kp.secretKey) }
 }
 
 export function deriveSharedKey(ourSecretKey: Uint8Array, peerPublicKey: Uint8Array): Uint8Array {
-  return nacl.box.before(peerPublicKey, ourSecretKey)
+  return u8(nacl.box.before(u8(peerPublicKey), u8(ourSecretKey)))
 }
 
-// Why: React Native doesn't have Node's Buffer. Use atob/btoa which are
-// available in the Hermes JS engine.
 function uint8ToBase64(bytes: Uint8Array): string {
   let binary = ''
   for (let i = 0; i < bytes.length; i++) {
@@ -40,7 +48,13 @@ function base64ToUint8(b64: string): Uint8Array {
 }
 
 export function publicKeyFromBase64(b64: string): Uint8Array {
-  return base64ToUint8(b64)
+  const key = base64ToUint8(b64)
+  if (key.length !== 32) {
+    throw new Error(
+      `Invalid public key: expected 32 bytes, got ${key.length} from "${b64.slice(0, 20)}..."`
+    )
+  }
+  return key
 }
 
 export function publicKeyToBase64(key: Uint8Array): string {
@@ -48,9 +62,9 @@ export function publicKeyToBase64(key: Uint8Array): string {
 }
 
 export function encrypt(plaintext: string, sharedKey: Uint8Array): string {
-  const nonce = nacl.randomBytes(nacl.box.nonceLength)
-  const messageBytes = new TextEncoder().encode(plaintext)
-  const ciphertext = nacl.box.after(messageBytes, nonce, sharedKey)
+  const nonce = u8(nacl.randomBytes(nacl.box.nonceLength))
+  const messageBytes = u8(new TextEncoder().encode(plaintext))
+  const ciphertext = nacl.box.after(messageBytes, nonce, u8(sharedKey))
 
   const bundle = new Uint8Array(nonce.length + ciphertext.length)
   bundle.set(nonce)
@@ -65,9 +79,9 @@ export function decrypt(encrypted: string, sharedKey: Uint8Array): string | null
     return null
   }
 
-  const nonce = new Uint8Array(bundle.subarray(0, nacl.box.nonceLength))
-  const ciphertext = new Uint8Array(bundle.subarray(nacl.box.nonceLength))
-  const plaintext = nacl.box.open.after(ciphertext, nonce, sharedKey)
+  const nonce = u8(bundle.subarray(0, nacl.box.nonceLength))
+  const ciphertext = u8(bundle.subarray(nacl.box.nonceLength))
+  const plaintext = nacl.box.open.after(ciphertext, nonce, u8(sharedKey))
 
   if (!plaintext) {
     return null

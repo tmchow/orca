@@ -147,8 +147,13 @@ export function connect(
         return
       }
 
-      // Why: post-handshake, all messages are encrypted. Decrypt before processing.
-      const plaintext = decrypt(raw, sharedKey!)
+      // Why: guard against decrypt with an invalid key — sharedKey can be null
+      // after destroy() or if a message arrives during a reconnect race.
+      if (!sharedKey || sharedKey.length !== 32) {
+        return
+      }
+
+      const plaintext = decrypt(raw, sharedKey)
       if (plaintext === null) {
         return
       }

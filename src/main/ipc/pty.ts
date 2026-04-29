@@ -729,20 +729,21 @@ export function registerPtyHandlers(
       if (effectiveShellOverride !== undefined) {
         spawnOptions.shellOverride = effectiveShellOverride
       }
+      if (effectiveSessionId !== undefined) {
+        // Why: daemon PTYs can emit prompt/startup bytes before spawn()
+        // resolves. Runtime headless snapshots need the real pane geometry
+        // for those early bytes; otherwise they default to 80x24 and wrap TUIs.
+        ptySizes.set(effectiveSessionId, { cols: args.cols, rows: args.rows })
+      }
       let result: PtySpawnResult
       try {
         result = await provider.spawn(spawnOptions)
       } catch (err) {
+        if (effectiveSessionId !== undefined) {
+          ptySizes.delete(effectiveSessionId)
+        }
         // Why: when buildPtyHostEnv materialized a Pi overlay for this id
-        // but provider.spawn failed, the overlay would leak. Sweep per-PTY
-        // state for the minted id so it isn't orphaned. Safe to call even
-        // when no overlay was created (clearProviderPtyState is a no-op in
-        // that case).
-        //
-        // Only clean up when we MINTED the id in this request. Caller-supplied
-        // ids may correspond to existing PTYs whose state (OpenCode hooks, Pi
-        // overlay, agent-hook pane caches) we MUST NOT clear on a retry/attach
-        // failure.
+        // but provider.spawn failed, the overlay would leak.
         if (isMintedSessionId && effectiveSessionId !== undefined) {
           clearProviderPtyState(effectiveSessionId)
         }

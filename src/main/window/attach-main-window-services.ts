@@ -4,7 +4,7 @@ import path from 'node:path'
 import { app, clipboard, ipcMain, nativeImage, session, systemPreferences } from 'electron'
 import type { BrowserWindow, MediaAccessPermissionRequest } from 'electron'
 import type { Store } from '../persistence'
-import type { CreateWorktreeResult } from '../../shared/types'
+import type { CreateWorktreeResult, WorktreeStartupLaunch } from '../../shared/types'
 import { ORCA_BROWSER_PARTITION } from '../../shared/constants'
 import { registerRepoHandlers } from '../ipc/repos'
 import { registerWorktreeHandlers } from '../ipc/worktrees'
@@ -211,9 +211,19 @@ function registerRuntimeWindowLifecycle(
         mainWindow.webContents.send('repos:changed')
       }
     },
-    activateWorktree: (repoId, worktreeId, setup?: CreateWorktreeResult['setup']) => {
+    activateWorktree: (
+      repoId,
+      worktreeId,
+      setup?: CreateWorktreeResult['setup'],
+      startup?: WorktreeStartupLaunch
+    ) => {
       if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('ui:activateWorktree', { repoId, worktreeId, setup })
+        mainWindow.webContents.send('ui:activateWorktree', {
+          repoId,
+          worktreeId,
+          ...(setup ? { setup } : {}),
+          ...(startup ? { startup } : {})
+        })
       }
     },
     createTerminal: (worktreeId, opts) => {
