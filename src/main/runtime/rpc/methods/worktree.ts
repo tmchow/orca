@@ -44,7 +44,8 @@ const WorktreeCreate = z.object({
 const WorktreeSet = WorktreeSelector.extend({
   displayName: OptionalString,
   linkedIssue: TriStateLinkedIssue,
-  comment: OptionalString
+  comment: OptionalString,
+  isPinned: OptionalBoolean
 })
 
 const WorktreeRemove = WorktreeSelector.extend({
@@ -96,7 +97,8 @@ export const WORKTREE_METHODS: RpcMethod[] = [
       worktree: await runtime.updateManagedWorktreeMeta(params.worktree, {
         displayName: params.displayName,
         linkedIssue: params.linkedIssue,
-        comment: params.comment
+        comment: params.comment,
+        isPinned: params.isPinned
       })
     })
   }),

@@ -14,7 +14,12 @@ import { join } from 'path'
 import { rm } from 'fs/promises'
 import { OrchestrationDb } from './orchestration/db'
 import { formatMessagesForInjection } from './orchestration/formatter'
-import type { CreateWorktreeResult, Repo, WorktreeStartupLaunch } from '../../shared/types'
+import type {
+  CreateWorktreeResult,
+  Repo,
+  StatsSummary,
+  WorktreeStartupLaunch
+} from '../../shared/types'
 import { isFolderRepo } from '../../shared/repo-kind'
 import type {
   RuntimeGraphStatus,
@@ -261,6 +266,13 @@ type ResolvedWorktreeCache = {
   worktrees: ResolvedWorktree[]
 }
 
+export type MobileNotificationEvent = {
+  source: 'agent-task-complete' | 'terminal-bell' | 'test'
+  title: string
+  body: string
+  worktreeId?: string
+}
+
 export class OrcaRuntimeService {
   private readonly runtimeId = randomUUID()
   private readonly startedAt = Date.now()
@@ -288,6 +300,11 @@ export class OrcaRuntimeService {
   // without polling. Keyed by ptyId for O(1) lookup per data event.
   private dataListeners = new Map<string, Set<(data: string) => void>>()
   private subscriptionCleanups = new Map<string, () => void>()
+  // Why: mobile clients subscribe to desktop notifications via
+  // notifications.subscribe. This set enables fan-out — each connected
+  // mobile client gets its own listener, and dispatchMobileNotification
+  // iterates them all. Listeners are cleaned up via subscriptionCleanups.
+  private notificationListeners = new Set<(event: MobileNotificationEvent) => void>()
   private ptysById = new Map<string, RuntimePtyWorktreeRecord>()
   private headlessTerminals = new Map<string, RuntimeHeadlessTerminal>()
   // Why: mobile-fit overrides are keyed by ptyId (not terminal handle) because
@@ -306,11 +323,18 @@ export class OrcaRuntimeService {
     }
   >()
 
+  private stats: StatsCollector | null = null
+
   constructor(store: RuntimeStore | null = null, stats?: StatsCollector) {
     this.store = store
     if (stats) {
+      this.stats = stats
       this.agentDetector = new AgentDetector(stats)
     }
+  }
+
+  getStatsSummary(): StatsSummary | null {
+    return this.stats?.getSummary() ?? null
   }
 
   // Why: lazy initialization — the DB path depends on Electron's userData
@@ -719,6 +743,26 @@ export class OrcaRuntimeService {
     if (cleanup) {
       this.subscriptionCleanups.delete(subscriptionId)
       cleanup()
+    }
+  }
+
+  // Why: mobile clients subscribe via notifications.subscribe streaming RPC.
+  // Each subscriber gets its own listener. Returns an unsubscribe function
+  // that the subscription cleanup mechanism calls on disconnect.
+  onNotificationDispatched(listener: (event: MobileNotificationEvent) => void): () => void {
+    this.notificationListeners.add(listener)
+    return () => {
+      this.notificationListeners.delete(listener)
+    }
+  }
+
+  getMobileNotificationListenerCount(): number {
+    return this.notificationListeners.size
+  }
+
+  dispatchMobileNotification(event: MobileNotificationEvent): void {
+    for (const listener of this.notificationListeners) {
+      listener(event)
     }
   }
 
@@ -1656,6 +1700,7 @@ export class OrcaRuntimeService {
       displayName?: string
       linkedIssue?: number | null
       comment?: string
+      isPinned?: boolean
     }
   ) {
     if (!this.store) {
@@ -1665,7 +1710,8 @@ export class OrcaRuntimeService {
     const meta = this.store.setWorktreeMeta(worktree.id, {
       ...(updates.displayName !== undefined ? { displayName: updates.displayName } : {}),
       ...(updates.linkedIssue !== undefined ? { linkedIssue: updates.linkedIssue } : {}),
-      ...(updates.comment !== undefined ? { comment: updates.comment } : {})
+      ...(updates.comment !== undefined ? { comment: updates.comment } : {}),
+      ...(updates.isPinned !== undefined ? { isPinned: updates.isPinned } : {})
     })
     // Why: unlike renderer-initiated optimistic updates, CLI callers need an
     // explicit push so the editor refreshes metadata changed outside the UI.
@@ -4090,6 +4136,13 @@ function compareWorktreePs(
   left: RuntimeWorktreePsSummary,
   right: RuntimeWorktreePsSummary
 ): number {
+  // Pinned and unread worktrees sort above others so they survive truncation.
+  if (left.isPinned !== right.isPinned) {
+    return left.isPinned ? -1 : 1
+  }
+  if (left.unread !== right.unread) {
+    return left.unread ? -1 : 1
+  }
   const leftLast = left.lastOutputAt ?? -1
   const rightLast = right.lastOutputAt ?? -1
   if (leftLast !== rightLast) {

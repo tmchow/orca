@@ -315,11 +315,24 @@ export default function HostScreen() {
         setWorktrees(result.worktrees)
         setLastKnownWorktrees(result.worktrees)
         setWorktreesLoaded(true)
+
+        // Sync local pin state from server so desktop-initiated pins/unpins
+        // are reflected without relying on stale AsyncStorage.
+        const serverPinned = new Set(
+          result.worktrees.filter((w) => w.isPinned).map((w) => w.worktreeId)
+        )
+        setPinnedIds((prev) => {
+          if (serverPinned.size === prev.size && [...serverPinned].every((id) => prev.has(id))) {
+            return prev
+          }
+          if (hostId) void savePinnedIds(hostId, serverPinned)
+          return serverPinned
+        })
       }
     } catch {
       // Will retry on reconnect
     }
-  }, [client, connState])
+  }, [client, connState, hostId])
 
   useEffect(() => {
     if (connState === 'connected') {
@@ -337,19 +350,42 @@ export default function HostScreen() {
 
   const togglePin = useCallback(
     (worktreeId: string) => {
+      const worktree = worktrees.find((w) => w.worktreeId === worktreeId)
+      const currentlyPinned = worktree
+        ? isWorktreePinned(worktree, pinnedIds)
+        : pinnedIds.has(worktreeId)
+      const newPinned = !currentlyPinned
+
+      setWorktrees((prev) =>
+        prev.map((w) => (w.worktreeId === worktreeId ? { ...w, isPinned: newPinned } : w))
+      )
+      setLastKnownWorktrees((prev) =>
+        prev.map((w) => (w.worktreeId === worktreeId ? { ...w, isPinned: newPinned } : w))
+      )
+
+      updateLocalPins(worktreeId, newPinned)
+
+      if (client) {
+        client
+          .sendRequest('worktree.set', {
+            worktree: `id:${worktreeId}`,
+            isPinned: newPinned
+          })
+          .catch(() => {})
+      }
+    },
+    [client, worktrees, pinnedIds, hostId]
+  )
+
+  const updateLocalPins = useCallback(
+    (worktreeId: string, pinned: boolean) => {
       setPinnedIds((prev) => {
         const next = new Set(prev)
-        if (next.has(worktreeId)) next.delete(worktreeId)
-        else next.add(worktreeId)
+        if (pinned) next.add(worktreeId)
+        else next.delete(worktreeId)
         if (hostId) void savePinnedIds(hostId, next)
         return next
       })
-      setWorktrees((prev) =>
-        prev.map((w) => (w.worktreeId === worktreeId ? { ...w, isPinned: !w.isPinned } : w))
-      )
-      setLastKnownWorktrees((prev) =>
-        prev.map((w) => (w.worktreeId === worktreeId ? { ...w, isPinned: !w.isPinned } : w))
-      )
     },
     [hostId]
   )
@@ -815,7 +851,7 @@ export default function HostScreen() {
                   }
                 },
                 {
-                  label: pinnedIds.has(actionTarget.worktreeId) ? 'Unpin' : 'Pin',
+                  label: isWorktreePinned(actionTarget, pinnedIds) ? 'Unpin' : 'Pin',
                   onPress: () => togglePin(actionTarget.worktreeId)
                 },
                 {

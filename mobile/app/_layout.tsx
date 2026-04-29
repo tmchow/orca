@@ -1,9 +1,49 @@
+import { useCallback, useState } from 'react'
+import { View, StyleSheet } from 'react-native'
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
+import * as SplashScreen from 'expo-splash-screen'
+import * as Notifications from 'expo-notifications'
 import { colors } from '../src/theme/mobile-theme'
 import { OrcaLogo } from '../src/components/OrcaLogo'
 
+// Why: keeps the native splash screen visible until the React tree is mounted
+// and ready to render. Without this the user sees a blank white/black frame
+// between the native splash and the first React paint.
+SplashScreen.preventAutoHideAsync()
+
+// Why: without this, expo-notifications silently drops notifications when
+// the app is in the foreground. Setting all three to true makes iOS/Android
+// display the banner, play the sound, and show the badge even while the
+// app is active. This runs once at module load time before any notification
+// is scheduled.
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false
+  })
+})
+
 export default function RootLayout() {
+  const [appReady, setAppReady] = useState(false)
+
+  // Why: onLayout fires once the root view has been measured and rendered,
+  // which is the earliest safe moment to hide the native splash.
+  const onLayoutRootView = useCallback(async () => {
+    setAppReady(true)
+    await SplashScreen.hideAsync()
+  }, [])
+
+  if (!appReady) {
+    return (
+      <View style={styles.splash} onLayout={onLayoutRootView}>
+        <OrcaLogo size={56} color={colors.textPrimary} />
+      </View>
+    )
+  }
+
   return (
     <>
       <StatusBar style="light" />
@@ -25,9 +65,20 @@ export default function RootLayout() {
         />
         <Stack.Screen name="pair-scan" options={{ headerShown: false }} />
         <Stack.Screen name="settings" options={{ headerShown: false }} />
+        <Stack.Screen name="notifications" options={{ headerShown: false }} />
+        <Stack.Screen name="troubleshoot" options={{ headerShown: false }} />
         <Stack.Screen name="about" options={{ headerShown: false }} />
         <Stack.Screen name="h" options={{ headerShown: false }} />
       </Stack>
     </>
   )
 }
+
+const styles = StyleSheet.create({
+  splash: {
+    flex: 1,
+    backgroundColor: colors.bgBase,
+    alignItems: 'center',
+    justifyContent: 'center'
+  }
+})

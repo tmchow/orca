@@ -1,9 +1,8 @@
-import { View, Text, StyleSheet, Pressable, Linking } from 'react-native'
+import { View, Text, StyleSheet, Pressable } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { ChevronLeft, ChevronRight, Info } from 'lucide-react-native'
-import { OrcaLogo } from '../src/components/OrcaLogo'
-import { colors, spacing, radii, typography } from '../src/theme/mobile-theme'
+import { ChevronLeft, ChevronRight, Info, Bell, Wrench } from 'lucide-react-native'
+import { colors, spacing, typography } from '../src/theme/mobile-theme'
 
 export default function SettingsScreen() {
   const router = useRouter()
@@ -19,6 +18,24 @@ export default function SettingsScreen() {
       </View>
 
       <View style={styles.section}>
+        <Pressable
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() => router.push('/notifications')}
+        >
+          <Bell size={16} color={colors.textSecondary} />
+          <Text style={styles.rowLabel}>Notifications</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
+        </Pressable>
+        <View style={styles.separator} />
+        <Pressable
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() => router.push('/troubleshoot')}
+        >
+          <Wrench size={16} color={colors.textSecondary} />
+          <Text style={styles.rowLabel}>Troubleshooting</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
+        </Pressable>
+        <View style={styles.separator} />
         <Pressable
           style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
           onPress={() => router.push('/about')}
@@ -76,5 +93,10 @@ const styles = StyleSheet.create({
     fontSize: typography.bodySize,
     fontWeight: '500',
     color: colors.textPrimary
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.borderSubtle,
+    marginHorizontal: spacing.md
   }
 })

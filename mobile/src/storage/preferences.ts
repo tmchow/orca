@@ -2,6 +2,21 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 
 const PINS_PREFIX = 'orca:pins:'
 const PREFS_PREFIX = 'orca:prefs:'
+const NOTIF_KEY = 'orca:pushNotificationsEnabled'
+
+export async function loadPushNotificationsEnabled(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(NOTIF_KEY)
+    if (raw === null) return true
+    return raw === 'true'
+  } catch {
+    return true
+  }
+}
+
+export async function savePushNotificationsEnabled(enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(NOTIF_KEY, String(enabled))
+}
 
 export type HostPreferences = {
   sortMode: string

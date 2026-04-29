@@ -78,7 +78,7 @@ export function registerCoreHandlers(
   registerExportHandlers()
   registerStatsHandlers(stats)
   registerMemoryHandlers(store)
-  registerNotificationHandlers(store)
+  registerNotificationHandlers(store, runtime)
   registerDeveloperPermissionHandlers()
   registerSettingsHandlers(store)
   registerBrowserHandlers()

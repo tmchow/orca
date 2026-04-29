@@ -1,10 +1,19 @@
-import { useState, useCallback, useEffect, useMemo } from 'react'
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { View, Text, StyleSheet, Pressable, FlatList } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter, useFocusEffect } from 'expo-router'
-import { Monitor, MoreHorizontal, QrCode, Settings } from 'lucide-react-native'
+import {
+  Monitor,
+  MoreHorizontal,
+  QrCode,
+  Settings,
+  Bot,
+  Clock,
+  GitPullRequest
+} from 'lucide-react-native'
 import { loadHosts, removeHost, renameHost } from '../src/transport/host-store'
-import { connect } from '../src/transport/rpc-client'
+import { connect, type RpcClient } from '../src/transport/rpc-client'
+import { subscribeToDesktopNotifications } from '../src/notifications/mobile-notifications'
 import type { ConnectionState, HostProfile } from '../src/transport/types'
 import { triggerMediumImpact } from '../src/platform/haptics'
 import { OrcaLogo } from '../src/components/OrcaLogo'
@@ -31,6 +40,35 @@ const STATUS_LABELS: Record<ConnectionState, string> = {
   'auth-failed': 'Auth failed'
 }
 
+type StatsSummary = {
+  totalAgentsSpawned: number
+  totalPRsCreated: number
+  totalAgentTimeMs: number
+  firstEventAt: number | null
+}
+
+function formatDuration(ms: number): string {
+  const totalMinutes = Math.floor(ms / 60_000)
+  const totalHours = Math.floor(totalMinutes / 60)
+  const days = Math.floor(totalHours / 24)
+  const hours = totalHours % 24
+  if (days > 0) return `${days}d ${hours}h`
+  const minutes = totalMinutes % 60
+  if (totalHours > 0) return `${totalHours}h ${minutes}m`
+  return `${totalMinutes}m`
+}
+
+function fetchStats(client: RpcClient, setStats: (s: StatsSummary) => void) {
+  client
+    .sendRequest('stats.summary')
+    .then((response) => {
+      if (response.ok) {
+        setStats(response.result as StatsSummary)
+      }
+    })
+    .catch(() => {})
+}
+
 export default function HomeScreen() {
   const router = useRouter()
   const [hosts, setHosts] = useState<HostProfile[]>([])
@@ -38,10 +76,19 @@ export default function HomeScreen() {
   const [renameTarget, setRenameTarget] = useState<HostProfile | null>(null)
   const [confirmRemove, setConfirmRemove] = useState<HostProfile | null>(null)
   const [hostStates, setHostStates] = useState<Record<string, ConnectionState>>({})
+  const [stats, setStats] = useState<StatsSummary | null>(null)
+  const clientsRef = useRef<RpcClient[]>([])
 
   useFocusEffect(
     useCallback(() => {
       void loadHosts().then(setHosts)
+      // Refetch stats from any connected client when the screen regains focus
+      for (const client of clientsRef.current) {
+        if (client.getState() === 'connected') {
+          fetchStats(client, setStats)
+          break
+        }
+      }
     }, [])
   )
 
@@ -52,22 +99,48 @@ export default function HomeScreen() {
 
   useEffect(() => {
     let disposed = false
+    const notifCleanups: Array<() => void> = []
     const clients = hosts.map((host) => {
       setHostStates((prev) => ({
         ...prev,
         [host.id]: prev[host.id] ?? 'connecting'
       }))
-      return connect(host.endpoint, host.deviceToken, host.publicKeyB64, (state) => {
+      const client = connect(host.endpoint, host.deviceToken, host.publicKeyB64, (state) => {
         if (disposed) return
         setHostStates((prev) => ({ ...prev, [host.id]: state }))
       })
+
+      let unsubNotif: (() => void) | null = null
+      let statsFetched = false
+      const unsubState = client.onStateChange((state) => {
+        if (state === 'connected') {
+          if (!unsubNotif) {
+            unsubNotif = subscribeToDesktopNotifications(client)
+          }
+          if (!statsFetched) {
+            statsFetched = true
+            fetchStats(client, setStats)
+          }
+        } else if (unsubNotif) {
+          unsubNotif()
+          unsubNotif = null
+        }
+      })
+      notifCleanups.push(() => {
+        unsubState()
+        unsubNotif?.()
+      })
+
+      return client
     })
+
+    clientsRef.current = clients
 
     return () => {
       disposed = true
-      for (const client of clients) {
-        client.close()
-      }
+      clientsRef.current = []
+      for (const cleanup of notifCleanups) cleanup()
+      for (const client of clients) client.close()
     }
   }, [hosts])
 
@@ -114,9 +187,34 @@ export default function HomeScreen() {
           keyExtractor={(h) => h.id}
           contentContainerStyle={styles.list}
           ListHeaderComponent={
-            <View style={styles.hero}>
-              <Text style={styles.heroTitle}>Paired Desktops</Text>
-              <Text style={styles.heroSubtitle}>Monitor workspaces and terminals remotely.</Text>
+            <View>
+              <View style={styles.hero}>
+                <Text style={styles.heroTitle}>Welcome back</Text>
+              </View>
+
+              {stats && (
+                <View style={styles.statsRow}>
+                  <View style={styles.statCard}>
+                    <Bot size={14} color={colors.textMuted} />
+                    <Text style={styles.statValue}>
+                      {stats.totalAgentsSpawned.toLocaleString()}
+                    </Text>
+                    <Text style={styles.statLabel}>Agents</Text>
+                  </View>
+                  <View style={styles.statCard}>
+                    <Clock size={14} color={colors.textMuted} />
+                    <Text style={styles.statValue}>{formatDuration(stats.totalAgentTimeMs)}</Text>
+                    <Text style={styles.statLabel}>Agent time</Text>
+                  </View>
+                  <View style={styles.statCard}>
+                    <GitPullRequest size={14} color={colors.textMuted} />
+                    <Text style={styles.statValue}>{stats.totalPRsCreated.toLocaleString()}</Text>
+                    <Text style={styles.statLabel}>PRs</Text>
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.sectionHeading}>Desktops</Text>
             </View>
           }
           ItemSeparatorComponent={() => <View style={styles.cardGap} />}
@@ -301,10 +399,35 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '800'
   },
-  heroSubtitle: {
+  statsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.xl
+  },
+  statCard: {
+    flex: 1,
+    backgroundColor: colors.bgPanel,
+    borderRadius: 10,
+    padding: spacing.md,
+    gap: spacing.xs
+  },
+  statValue: {
+    color: colors.textPrimary,
+    fontSize: 18,
+    fontWeight: '700'
+  },
+  statLabel: {
     color: colors.textMuted,
-    fontSize: typography.bodySize,
-    marginTop: spacing.xs
+    fontSize: typography.metaSize
+  },
+  sectionHeading: {
+    fontSize: typography.metaSize,
+    fontWeight: '600',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.xs
   },
   cardGap: {
     height: spacing.sm
