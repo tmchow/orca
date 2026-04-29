@@ -2,7 +2,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorktreeMeta } from '../../shared/types'
 import { addWorktree, listWorktrees, removeWorktree } from '../git/worktree'
-import { createSetupRunnerScript, getEffectiveHooks, runHook } from '../hooks'
+import {
+  createSetupRunnerScript,
+  getEffectiveHooks,
+  runHook,
+  shouldRunSetupForCreate
+} from '../hooks'
 import { OrchestrationDb } from './orchestration/db'
 import { OrcaRuntimeService } from './orca-runtime'
 
@@ -39,7 +44,8 @@ vi.mock('../git/worktree', () => ({
 vi.mock('../hooks', () => ({
   createSetupRunnerScript: vi.fn(),
   getEffectiveHooks: vi.fn().mockReturnValue(null),
-  runHook: vi.fn().mockResolvedValue({ success: true, output: '' })
+  runHook: vi.fn().mockResolvedValue({ success: true, output: '' }),
+  shouldRunSetupForCreate: vi.fn().mockReturnValue(false)
 }))
 
 vi.mock('../ipc/worktree-logic', async (importOriginal) => {
@@ -1320,6 +1326,7 @@ describe('OrcaRuntimeService', () => {
 
     computeWorktreePathMock.mockReturnValue('/tmp/workspaces/runtime-hook-test')
     ensurePathWithinWorkspaceMock.mockReturnValue('/tmp/workspaces/runtime-hook-test')
+    vi.mocked(shouldRunSetupForCreate).mockReturnValue(true)
     vi.mocked(getEffectiveHooks).mockReturnValue({
       scripts: {
         setup: 'pnpm worktree:setup'

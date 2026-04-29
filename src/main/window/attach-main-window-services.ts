@@ -200,9 +200,9 @@ function registerRuntimeWindowLifecycle(
   runtime: OrcaRuntimeService
 ): void {
   runtime.attachWindow(mainWindow.id)
-  const send = (channel: string, data?: unknown): void => {
+  const send = (channel: string, ...args: unknown[]): void => {
     if (!mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(channel, data)
+      mainWindow.webContents.send(channel, ...args)
     }
   }
   runtime.setNotifier({
