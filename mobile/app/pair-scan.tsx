@@ -36,7 +36,7 @@ export default function PairScanScreen() {
   async function testAndSave(offer: PairingOffer) {
     setStatus('connecting')
 
-    const client = connect(offer.endpoint, offer.deviceToken)
+    const client = connect(offer.endpoint, offer.deviceToken, offer.publicKeyB64)
 
     try {
       const response = await client.sendRequest('status.get')
@@ -63,7 +63,7 @@ export default function PairScanScreen() {
         name: hostName,
         endpoint: offer.endpoint,
         deviceToken: offer.deviceToken,
-        certFingerprint: offer.certFingerprint,
+        publicKeyB64: offer.publicKeyB64,
         lastConnected: Date.now()
       })
 
@@ -187,13 +187,13 @@ const styles = StyleSheet.create({
     lineHeight: 20
   },
   primaryButton: {
-    backgroundColor: colors.accentBlue,
+    backgroundColor: colors.textPrimary,
     paddingHorizontal: spacing.xl,
     paddingVertical: spacing.sm + 2,
     borderRadius: radii.button
   },
   primaryButtonText: {
-    color: '#fff',
+    color: colors.bgBase,
     fontSize: typography.bodySize,
     fontWeight: '600'
   }

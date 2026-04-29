@@ -24,19 +24,20 @@ export type RpcFailure = {
 
 export type RpcResponse = RpcSuccess | RpcFailure
 
-export const PAIRING_OFFER_VERSION = 1
+export const PAIRING_OFFER_VERSION = 2
 
-export const PairingOfferV1 = z.object({
+export const PairingOfferSchema = z.object({
   v: z.literal(PAIRING_OFFER_VERSION),
   endpoint: z.string().min(1),
   deviceToken: z.string().min(1),
-  certFingerprint: z.string().startsWith('sha256:')
+  publicKeyB64: z.string().min(1)
 })
 
-export type PairingOffer = z.infer<typeof PairingOfferV1>
+export type PairingOffer = z.infer<typeof PairingOfferSchema>
 
 export type ConnectionState =
   | 'connecting'
+  | 'handshaking'
   | 'connected'
   | 'disconnected'
   | 'reconnecting'
@@ -47,6 +48,6 @@ export type HostProfile = {
   name: string
   endpoint: string
   deviceToken: string
-  certFingerprint: string
+  publicKeyB64: string
   lastConnected: number
 }

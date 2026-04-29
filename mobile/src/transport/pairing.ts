@@ -1,4 +1,4 @@
-import { PairingOfferV1, type PairingOffer } from './types'
+import { PairingOfferSchema, type PairingOffer } from './types'
 
 export function decodePairingUrl(url: string): PairingOffer | null {
   try {
@@ -9,7 +9,7 @@ export function decodePairingUrl(url: string): PairingOffer | null {
     const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/')
     const json = atob(base64)
     const parsed = JSON.parse(json)
-    return PairingOfferV1.parse(parsed)
+    return PairingOfferSchema.parse(parsed)
   } catch {
     return null
   }

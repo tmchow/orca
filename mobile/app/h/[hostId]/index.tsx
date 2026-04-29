@@ -57,6 +57,7 @@ type GroupMode = 'none' | 'repo' | 'prStatus'
 
 const STATUS_LABELS: Record<ConnectionState, string> = {
   connecting: 'Connecting…',
+  handshaking: 'Securing…',
   connected: 'Connected',
   disconnected: 'Disconnected',
   reconnecting: 'Reconnecting…',
@@ -269,7 +270,7 @@ export default function HostScreen() {
       }
 
       setHostName(host.name)
-      rpcClient = connect(host.endpoint, host.deviceToken, setConnState)
+      rpcClient = connect(host.endpoint, host.deviceToken, host.publicKeyB64, setConnState)
       setClient(rpcClient)
 
       await updateLastConnected(host.id)

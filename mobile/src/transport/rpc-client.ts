@@ -1,4 +1,12 @@
 import type { RpcRequest, RpcResponse, RpcSuccess, ConnectionState } from './types'
+import {
+  generateKeyPair,
+  deriveSharedKey,
+  publicKeyFromBase64,
+  publicKeyToBase64,
+  encrypt,
+  decrypt
+} from './e2ee'
 
 type PendingRequest = {
   resolve: (response: RpcResponse) => void
@@ -23,10 +31,12 @@ export type RpcClient = {
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000]
 const REQUEST_TIMEOUT_MS = 30_000
+const HANDSHAKE_TIMEOUT_MS = 5_000
 
 export function connect(
   endpoint: string,
   deviceToken: string,
+  serverPublicKeyB64: string,
   onStateChange?: (state: ConnectionState) => void
 ): RpcClient {
   let ws: WebSocket | null = null
@@ -34,12 +44,17 @@ export function connect(
   let requestCounter = 0
   let reconnectAttempt = 0
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let handshakeTimer: ReturnType<typeof setTimeout> | null = null
   let intentionallyClosed = false
+
+  // Why: fresh ephemeral keypair per connection provides forward secrecy.
+  // The shared key is derived from our ephemeral secret + server's static public key.
+  let sharedKey: Uint8Array | null = null
+  const serverPublicKey = publicKeyFromBase64(serverPublicKeyB64)
 
   const pending = new Map<string, PendingRequest>()
   const streamListeners = new Map<string, StreamRequest>()
   const stateListeners = new Set<(state: ConnectionState) => void>()
-  // Callers that are waiting for the socket to reach 'connected' state
   const connectWaiters: Array<{ resolve: () => void; reject: (e: Error) => void }> = []
 
   if (onStateChange) {
@@ -75,28 +90,78 @@ export function connect(
     if (intentionallyClosed) return
 
     setState('connecting')
+    sharedKey = null
 
     ws = new WebSocket(endpoint)
 
     ws.onopen = () => {
       reconnectAttempt = 0
-      setState('connected')
-      for (const [id, stream] of streamListeners) {
-        sendRaw({ id, deviceToken, method: stream.method, params: stream.params })
-      }
+      setState('handshaking')
+
+      // Why: generate a fresh ephemeral keypair for each connection.
+      // This provides forward secrecy — compromising one session's key
+      // doesn't compromise past or future sessions.
+      const ephemeral = generateKeyPair()
+      const hello = JSON.stringify({
+        type: 'e2ee_hello',
+        publicKeyB64: publicKeyToBase64(ephemeral.publicKey),
+        deviceToken
+      })
+      ws?.send(hello)
+
+      sharedKey = deriveSharedKey(ephemeral.secretKey, serverPublicKey)
+
+      handshakeTimer = setTimeout(() => {
+        handshakeTimer = null
+        ws?.close()
+      }, HANDSHAKE_TIMEOUT_MS)
     }
 
     ws.onmessage = (event) => {
+      const raw = typeof event.data === 'string' ? event.data : String(event.data)
+
+      // Why: during handshaking, only accept e2ee_ready (plaintext).
+      // All other messages are silently discarded.
+      if (state === 'handshaking') {
+        try {
+          const msg = JSON.parse(raw)
+          if (msg.type === 'e2ee_ready') {
+            if (handshakeTimer) {
+              clearTimeout(handshakeTimer)
+              handshakeTimer = null
+            }
+            setState('connected')
+            for (const [id, stream] of streamListeners) {
+              sendEncrypted({ id, deviceToken, method: stream.method, params: stream.params })
+            }
+          } else if (msg.type === 'e2ee_error' || (!msg.ok && msg.error?.code === 'unauthorized')) {
+            intentionallyClosed = true
+            ws?.close()
+            ws = null
+            setState('auth-failed')
+            rejectAllPending('Unauthorized — pairing may be revoked')
+          }
+        } catch {
+          // Not JSON — ignore during handshake
+        }
+        return
+      }
+
+      // Why: post-handshake, all messages are encrypted. Decrypt before processing.
+      const plaintext = decrypt(raw, sharedKey!)
+      if (plaintext === null) {
+        return
+      }
+
       let response: RpcResponse
       try {
-        response = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data))
+        response = JSON.parse(plaintext)
       } catch {
         return
       }
 
       // Why: auth failure is distinct from transient disconnect — retrying
-      // with a rejected token causes infinite reconnect churn and hides the
-      // re-pair action the user needs to take.
+      // with a rejected token causes infinite reconnect churn.
       if (!response.ok && response.error.code === 'unauthorized') {
         intentionallyClosed = true
         ws?.close()
@@ -116,8 +181,6 @@ export function connect(
         return
       }
 
-      // Non-streaming: check if it's a final streaming message (type: 'end')
-      // or a one-shot response
       if (response.ok) {
         const result = (response as RpcSuccess).result as Record<string, unknown> | null
         if (result && result.type === 'end') {
@@ -128,7 +191,6 @@ export function connect(
             return
           }
         }
-        // Scrollback (first message from terminal.subscribe) also goes to stream listener
         if (result && result.type === 'scrollback') {
           const stream = streamListeners.get(response.id)
           if (stream) {
@@ -147,6 +209,11 @@ export function connect(
 
     ws.onclose = () => {
       ws = null
+      sharedKey = null
+      if (handshakeTimer) {
+        clearTimeout(handshakeTimer)
+        handshakeTimer = null
+      }
       if (intentionallyClosed) {
         setState('disconnected')
         rejectAllPending('Connection closed')
@@ -177,9 +244,9 @@ export function connect(
     }
   }
 
-  function sendRaw(request: RpcRequest) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(request))
+  function sendEncrypted(request: RpcRequest) {
+    if (ws && ws.readyState === WebSocket.OPEN && sharedKey) {
+      ws.send(encrypt(JSON.stringify(request), sharedKey))
     }
   }
 
@@ -207,7 +274,7 @@ export function connect(
           }
         })
 
-        sendRaw({ id, deviceToken, method, params })
+        sendEncrypted({ id, deviceToken, method, params })
       })
     },
 
@@ -216,13 +283,13 @@ export function connect(
       streamListeners.set(id, { method, params, listener: onData })
 
       if (state === 'connected') {
-        sendRaw({ id, deviceToken, method, params })
+        sendEncrypted({ id, deviceToken, method, params })
       }
 
       return () => {
         const stream = streamListeners.get(id)
         streamListeners.delete(id)
-        sendRaw({
+        sendEncrypted({
           id: nextId(),
           deviceToken,
           method: 'terminal.unsubscribe',
@@ -254,10 +321,15 @@ export function connect(
         clearTimeout(reconnectTimer)
         reconnectTimer = null
       }
+      if (handshakeTimer) {
+        clearTimeout(handshakeTimer)
+        handshakeTimer = null
+      }
       if (ws) {
         ws.close()
         ws = null
       }
+      sharedKey = null
       setState('disconnected')
       rejectAllPending('Client closed')
     }

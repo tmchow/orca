@@ -58,6 +58,7 @@ const persistedFittedHandles = new Map<string, Set<string>>()
 
 const STATUS_LABELS: Record<ConnectionState, string> = {
   connecting: 'Connecting',
+  handshaking: 'Securing',
   connected: 'Connected',
   disconnected: 'Disconnected',
   reconnecting: 'Reconnecting',
@@ -121,6 +122,16 @@ export default function SessionScreen() {
   const subscribeSeqRef = useRef(0)
 
   const canSend = connState === 'connected' && activeHandle != null
+
+  const writeLines = useCallback((lines: string[] | string | undefined) => {
+    const text = Array.isArray(lines) ? lines.join('\r\n') : (lines ?? '')
+    if (text) {
+      termRef.current?.write(text)
+      if (Array.isArray(lines)) {
+        termRef.current?.write('\r\n')
+      }
+    }
+  }, [])
 
   // Why: after a fit/restore resize the PTY grid changes, so we must
   // resubscribe to get a fresh scrollback snapshot at the new geometry.
@@ -245,7 +256,7 @@ export default function SessionScreen() {
       if (!host) return
 
       deviceTokenRef.current = host.deviceToken
-      rpcClient = connect(host.endpoint, host.deviceToken, setConnState)
+      rpcClient = connect(host.endpoint, host.deviceToken, host.publicKeyB64, setConnState)
       setClient(rpcClient)
     })()
 
@@ -263,16 +274,6 @@ export default function SessionScreen() {
     setTerminals([])
     termRef.current?.clear()
   }, [worktreeId])
-
-  const writeLines = useCallback((lines: string[] | string | undefined) => {
-    const text = Array.isArray(lines) ? lines.join('\r\n') : (lines ?? '')
-    if (text) {
-      termRef.current?.write(text)
-      if (Array.isArray(lines)) {
-        termRef.current?.write('\r\n')
-      }
-    }
-  }, [])
 
   const subscribeToTerminal = useCallback(
     (handle: string) => {

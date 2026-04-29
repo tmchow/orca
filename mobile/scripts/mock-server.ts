@@ -1,11 +1,46 @@
 #!/usr/bin/env npx tsx
 // Why: standalone mock WebSocket server for developing the mobile app without
 // a running Orca desktop instance. Responds to the same RPC methods the real
-// runtime exposes, with realistic fake data.
+// runtime exposes, with realistic fake data. Supports E2EE handshake.
 import { WebSocketServer, type WebSocket } from 'ws'
+import nacl from 'tweetnacl'
 
 const PORT = Number(process.env.PORT) || 6768
 const AUTH_TOKEN = 'mock-device-token'
+
+// Why: generate a persistent server keypair for this mock session.
+// The public key is printed at startup so it can be used in pairing QR data.
+const serverKeyPair = nacl.box.keyPair()
+const serverPublicKeyB64 = Buffer.from(serverKeyPair.publicKey).toString('base64')
+
+type E2EEState = {
+  sharedKey: Uint8Array
+  deviceToken: string
+}
+
+function deriveSharedKey(ourSecret: Uint8Array, peerPublic: Uint8Array): Uint8Array {
+  return nacl.box.before(peerPublic, ourSecret)
+}
+
+function e2eeEncrypt(plaintext: string, sharedKey: Uint8Array): string {
+  const nonce = nacl.randomBytes(nacl.box.nonceLength)
+  const msg = new TextEncoder().encode(plaintext)
+  const ciphertext = nacl.box.after(msg, nonce, sharedKey)
+  const bundle = new Uint8Array(nonce.length + ciphertext.length)
+  bundle.set(nonce)
+  bundle.set(ciphertext, nonce.length)
+  return Buffer.from(bundle).toString('base64')
+}
+
+function e2eeDecrypt(encrypted: string, sharedKey: Uint8Array): string | null {
+  const bundle = Uint8Array.from(Buffer.from(encrypted, 'base64'))
+  if (bundle.length < nacl.box.nonceLength + nacl.box.overheadLength) return null
+  const nonce = bundle.slice(0, nacl.box.nonceLength)
+  const ciphertext = bundle.slice(nacl.box.nonceLength)
+  const plaintext = nacl.box.open.after(ciphertext, nonce, sharedKey)
+  if (!plaintext) return null
+  return new TextDecoder().decode(plaintext)
+}
 
 const FAKE_WORKTREES = [
   {
@@ -103,121 +138,172 @@ function error(id: string, code: string, message: string): RpcResponse {
   return { id, ok: false, error: { code, message }, _meta: { runtimeId: 'mock-runtime' } }
 }
 
-function handleRequest(request: RpcRequest, ws: WebSocket): void {
-  if (request.deviceToken !== AUTH_TOKEN) {
-    ws.send(JSON.stringify(error(request.id, 'unauthorized', 'Invalid device token')))
-    return
-  }
-
+function handleRequest(
+  request: RpcRequest,
+  send: (response: RpcResponse) => void,
+  ws: WebSocket
+): void {
   switch (request.method) {
     case 'status.get':
-      ws.send(
-        JSON.stringify(
-          success(request.id, {
-            runtimeId: 'mock-runtime',
-            graphStatus: 'ready',
-            windowCount: 1,
-            tabCount: 2,
-            terminalCount: 2
-          })
-        )
+      send(
+        success(request.id, {
+          runtimeId: 'mock-runtime',
+          graphStatus: 'ready',
+          windowCount: 1,
+          tabCount: 2,
+          terminalCount: 2
+        })
       )
       break
 
     case 'worktree.ps':
-      ws.send(
-        JSON.stringify(
-          success(request.id, {
-            worktrees: FAKE_WORKTREES,
-            totalCount: FAKE_WORKTREES.length,
-            truncated: false
-          })
-        )
+      send(
+        success(request.id, {
+          worktrees: FAKE_WORKTREES,
+          totalCount: FAKE_WORKTREES.length,
+          truncated: false
+        })
       )
       break
 
     case 'terminal.list':
-      ws.send(
-        JSON.stringify(
-          success(request.id, {
-            terminals: FAKE_TERMINALS,
-            totalCount: FAKE_TERMINALS.length,
-            truncated: false
-          })
-        )
+      send(
+        success(request.id, {
+          terminals: FAKE_TERMINALS,
+          totalCount: FAKE_TERMINALS.length,
+          truncated: false
+        })
       )
       break
 
     case 'terminal.subscribe': {
-      ws.send(
-        JSON.stringify(
-          success(request.id, { type: 'scrollback', lines: FAKE_SCROLLBACK, truncated: false })
-        )
-      )
+      send(success(request.id, { type: 'scrollback', lines: FAKE_SCROLLBACK, truncated: false }))
 
       let chunkIndex = 0
       const interval = setInterval(() => {
         if (chunkIndex >= STREAMING_CHUNKS.length || ws.readyState !== ws.OPEN) {
           clearInterval(interval)
           if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify(success(request.id, { type: 'end' })))
+            send(success(request.id, { type: 'end' }))
           }
           return
         }
-        ws.send(
-          JSON.stringify(
-            success(request.id, { type: 'data', chunk: STREAMING_CHUNKS[chunkIndex] }, true)
-          )
-        )
+        send(success(request.id, { type: 'data', chunk: STREAMING_CHUNKS[chunkIndex] }, true))
         chunkIndex++
       }, 500)
       break
     }
 
     case 'terminal.send':
-      ws.send(JSON.stringify(success(request.id, { send: { handle: 'term-1', ok: true } })))
+      send(success(request.id, { send: { handle: 'term-1', ok: true } }))
       break
 
     case 'terminal.unsubscribe':
-      ws.send(JSON.stringify(success(request.id, { unsubscribed: true })))
+      send(success(request.id, { unsubscribed: true }))
       break
 
     default:
-      ws.send(
-        JSON.stringify(error(request.id, 'method_not_found', `Unknown method: ${request.method}`))
-      )
+      send(error(request.id, 'method_not_found', `Unknown method: ${request.method}`))
   }
 }
 
 const wss = new WebSocketServer({ port: PORT })
 
+// Why: each connection goes through an E2EE handshake before any RPC traffic.
+// The first message must be e2ee_hello (plaintext), then all subsequent
+// messages are encrypted with the derived shared key.
+const connectionState = new Map<WebSocket, E2EEState>()
+
 wss.on('connection', (ws) => {
-  console.log('[mock] Client connected')
+  console.log('[mock] Client connected — waiting for e2ee_hello')
 
   ws.on('message', (data) => {
     const msg = typeof data === 'string' ? data : data.toString('utf-8')
+    const e2ee = connectionState.get(ws)
+
+    if (!e2ee) {
+      // Handshake phase — expect e2ee_hello
+      let hello: { type?: string; publicKeyB64?: string; deviceToken?: string }
+      try {
+        hello = JSON.parse(msg)
+      } catch {
+        ws.send(JSON.stringify({ type: 'e2ee_error', message: 'Invalid JSON' }))
+        ws.close()
+        return
+      }
+
+      if (hello.type !== 'e2ee_hello' || !hello.publicKeyB64 || !hello.deviceToken) {
+        ws.send(JSON.stringify({ type: 'e2ee_error', message: 'Expected e2ee_hello' }))
+        ws.close()
+        return
+      }
+
+      if (hello.deviceToken !== AUTH_TOKEN) {
+        ws.send(
+          JSON.stringify({ ok: false, error: { code: 'unauthorized', message: 'Bad token' } })
+        )
+        ws.close()
+        return
+      }
+
+      const clientPublicKey = Uint8Array.from(Buffer.from(hello.publicKeyB64, 'base64'))
+      if (clientPublicKey.length !== 32) {
+        ws.send(JSON.stringify({ type: 'e2ee_error', message: 'Invalid public key' }))
+        ws.close()
+        return
+      }
+
+      const sharedKey = deriveSharedKey(serverKeyPair.secretKey, clientPublicKey)
+      connectionState.set(ws, { sharedKey, deviceToken: hello.deviceToken })
+
+      ws.send(JSON.stringify({ type: 'e2ee_ready' }))
+      console.log('[mock] E2EE handshake complete')
+      return
+    }
+
+    // Post-handshake — decrypt, handle, encrypt reply
+    const plaintext = e2eeDecrypt(msg, e2ee.sharedKey)
+    if (plaintext === null) {
+      console.log('[mock] Decryption failed — dropping message')
+      return
+    }
+
     let request: RpcRequest
     try {
-      request = JSON.parse(msg) as RpcRequest
+      request = JSON.parse(plaintext) as RpcRequest
     } catch {
-      ws.send(JSON.stringify(error('unknown', 'bad_request', 'Invalid JSON')))
+      const encrypted = e2eeEncrypt(
+        JSON.stringify(error('unknown', 'bad_request', 'Invalid JSON')),
+        e2ee.sharedKey
+      )
+      ws.send(encrypted)
       return
     }
 
     console.log(`[mock] ${request.method} (id: ${request.id})`)
-    handleRequest(request, ws)
+    handleRequest(
+      request,
+      (response) => {
+        if (ws.readyState === ws.OPEN) {
+          ws.send(e2eeEncrypt(JSON.stringify(response), e2ee.sharedKey))
+        }
+      },
+      ws
+    )
   })
 
   ws.on('close', () => {
+    connectionState.delete(ws)
     console.log('[mock] Client disconnected')
   })
 
   ws.on('error', () => {
+    connectionState.delete(ws)
     ws.close()
   })
 })
 
 console.log(`[mock] Orca mock server listening on ws://localhost:${PORT}`)
 console.log(`[mock] Auth token: ${AUTH_TOKEN}`)
-console.log(`[mock] Try: npx wscat -c ws://localhost:${PORT}`)
-console.log(`[mock] Then send: {"id":"1","deviceToken":"${AUTH_TOKEN}","method":"status.get"}`)
+console.log(`[mock] Server public key (base64): ${serverPublicKeyB64}`)
+console.log(`[mock] E2EE enabled — clients must send e2ee_hello before RPC`)

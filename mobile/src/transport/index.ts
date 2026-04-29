@@ -16,4 +16,4 @@ export type {
   HostProfile,
   PairingOffer
 } from './types'
-export { PairingOfferV1, PAIRING_OFFER_VERSION } from './types'
+export { PairingOfferSchema, PAIRING_OFFER_VERSION } from './types'

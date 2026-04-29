@@ -5,6 +5,7 @@ import type { ConnectionState } from '../transport/types'
 const stateColors: Record<ConnectionState, string> = {
   connected: colors.statusGreen,
   connecting: colors.statusAmber,
+  handshaking: colors.statusAmber,
   reconnecting: colors.statusAmber,
   disconnected: colors.statusRed,
   'auth-failed': colors.statusRed

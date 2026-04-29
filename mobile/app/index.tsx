@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react'
 import { View, Text, StyleSheet, Pressable, FlatList } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter, useFocusEffect } from 'expo-router'
-import { MoreHorizontal, QrCode, Server, ShieldCheck, Sparkles } from 'lucide-react-native'
+import { MoreHorizontal, QrCode, Server } from 'lucide-react-native'
 import { loadHosts, removeHost, renameHost } from '../src/transport/host-store'
 import { connect } from '../src/transport/rpc-client'
 import type { ConnectionState, HostProfile } from '../src/transport/types'
@@ -47,7 +47,7 @@ export default function HomeScreen() {
         ...prev,
         [host.id]: prev[host.id] ?? 'connecting'
       }))
-      return connect(host.endpoint, host.deviceToken, (state) => {
+      return connect(host.endpoint, host.deviceToken, host.publicKeyB64, (state) => {
         if (disposed) return
         setHostStates((prev) => ({ ...prev, [host.id]: state }))
       })
@@ -88,32 +88,15 @@ export default function HomeScreen() {
 
       {hosts.length === 0 ? (
         <View style={styles.emptyContent}>
-          <View style={styles.emptyBeacon}>
-            <View style={styles.beaconRingOuter} />
-            <View style={styles.beaconRingInner} />
-            <View style={styles.beaconCore}>
-              <QrCode size={34} color={colors.textPrimary} strokeWidth={1.8} />
-            </View>
-          </View>
           <Text style={styles.emptyTitle}>Pair your first desktop</Text>
           <Text style={styles.emptySubtitle}>
             Scan the QR code from Orca desktop to see live worktrees, terminals, and agent output
             from your phone.
           </Text>
           <Pressable style={styles.primaryButton} onPress={() => router.push('/pair-scan')}>
-            <QrCode size={17} color="#fff" />
+            <QrCode size={17} color={colors.bgBase} />
             <Text style={styles.primaryButtonText}>Scan Pairing Code</Text>
           </Pressable>
-          <View style={styles.emptyChecklist}>
-            <View style={styles.checkItem}>
-              <ShieldCheck size={15} color={colors.statusGreen} />
-              <Text style={styles.checkText}>Token-based local connection</Text>
-            </View>
-            <View style={styles.checkItem}>
-              <Sparkles size={15} color={colors.statusAmber} />
-              <Text style={styles.checkText}>Jump back into active worktrees</Text>
-            </View>
-          </View>
         </View>
       ) : (
         <FlatList
@@ -266,40 +249,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingBottom: spacing.xl
   },
-  emptyBeacon: {
-    width: 168,
-    height: 168,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.xl
-  },
-  beaconRingOuter: {
-    position: 'absolute',
-    width: 168,
-    height: 168,
-    borderRadius: 84,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle
-  },
-  beaconRingInner: {
-    position: 'absolute',
-    width: 112,
-    height: 112,
-    borderRadius: 56,
-    borderWidth: 1,
-    borderColor: colors.bgRaised,
-    backgroundColor: colors.bgPanel
-  },
-  beaconCore: {
-    width: 72,
-    height: 72,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.bgRaised,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle
-  },
   emptyTitle: {
     fontSize: 23,
     fontWeight: '700',
@@ -318,34 +267,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    backgroundColor: colors.accentBlue,
+    backgroundColor: colors.textPrimary,
     paddingHorizontal: spacing.xl,
     paddingVertical: spacing.md,
     borderRadius: radii.button
   },
   primaryButtonText: {
-    color: '#fff',
+    color: colors.bgBase,
     fontSize: typography.bodySize,
     fontWeight: '700'
-  },
-  emptyChecklist: {
-    alignSelf: 'stretch',
-    marginTop: spacing.xl,
-    padding: spacing.md,
-    borderRadius: radii.row,
-    backgroundColor: colors.bgPanel,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    gap: spacing.sm
-  },
-  checkItem: {
-    flexDirection: 'row',
-    alignItems: 'center'
-  },
-  checkText: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    marginLeft: spacing.sm
   },
   list: {
     paddingHorizontal: spacing.lg,

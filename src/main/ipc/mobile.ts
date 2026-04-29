@@ -42,16 +42,16 @@ export function registerMobileHandlers(rpcServer: OrcaRuntimeRpcServer): void {
 
     const device = registry.addDevice(`Mobile ${new Date().toLocaleDateString()}`)
 
-    // Why: certFingerprint is 'sha256:pending' when TLS is disabled (Phase 1
-    // will add cert pinning on mobile). The mobile app stores it but doesn't
-    // enforce it until TLS is re-enabled.
-    const fingerprint = rpcServer.getTlsFingerprint() ?? 'sha256:pending'
+    const publicKeyB64 = rpcServer.getE2EEPublicKey()
+    if (!publicKeyB64) {
+      return { available: false as const }
+    }
 
     const url = encodePairingOffer({
       v: PAIRING_OFFER_VERSION,
       endpoint,
       deviceToken: device.token,
-      certFingerprint: fingerprint
+      publicKeyB64
     })
 
     const qrDataUrl = await QRCode.toDataURL(url, {

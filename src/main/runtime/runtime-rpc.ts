@@ -16,6 +16,8 @@ import { UnixSocketTransport } from './rpc/unix-socket-transport'
 import { WebSocketTransport } from './rpc/ws-transport'
 import type { WebSocket } from 'ws'
 import { DeviceRegistry } from './device-registry'
+import { loadOrCreateE2EEKeypair, type E2EEKeypair } from './e2ee-keypair'
+import { E2EEChannel } from './rpc/e2ee-channel'
 
 const DEFAULT_WS_PORT = 6768
 
@@ -38,9 +40,13 @@ export class OrcaRuntimeRpcServer {
   private readonly wsPort: number
   private readonly authToken = randomBytes(24).toString('hex')
   private deviceRegistry: DeviceRegistry | null = null
+  private e2eeKeypair: E2EEKeypair | null = null
   private tlsFingerprint: string | null = null
   private activeTransports: RpcTransport[] = []
   private transports: RuntimeTransportMetadata[] = []
+  // Why: each WebSocket connection has its own E2EE channel that manages the
+  // handshake and encrypt/decrypt lifecycle. Keyed by WebSocket instance.
+  private e2eeChannels = new Map<WebSocket, E2EEChannel>()
 
   constructor({
     runtime,
@@ -65,6 +71,14 @@ export class OrcaRuntimeRpcServer {
 
   getTlsFingerprint(): string | null {
     return this.tlsFingerprint
+  }
+
+  getE2EEPublicKey(): string | null {
+    return this.e2eeKeypair?.publicKeyB64 ?? null
+  }
+
+  getE2EEKeypair(): E2EEKeypair | null {
+    return this.e2eeKeypair
   }
 
   getWebSocketEndpoint(): string | null {
@@ -104,32 +118,57 @@ export class OrcaRuntimeRpcServer {
     const transportsMeta: RuntimeTransportMetadata[] = [transportMeta]
 
     // Why: WebSocket transport is opt-in and starts alongside the Unix socket.
-    // It uses TLS with a self-signed cert and per-device tokens from the
-    // device registry, not the shared runtime auth token.
+    // It uses per-device tokens and E2EE (application-layer encryption via
+    // tweetnacl) rather than TLS, since React Native can't pin self-signed certs.
     if (this.enableWebSocket) {
       try {
         this.deviceRegistry = new DeviceRegistry(this.userDataPath)
+        this.e2eeKeypair = loadOrCreateE2EEKeypair(this.userDataPath)
 
-        // Why: React Native's built-in WebSocket cannot disable TLS verification
-        // for self-signed certificates. Use plain ws:// for now — per-device
-        // tokens still provide auth. TLS will be re-enabled once the mobile app
-        // implements certificate pinning via the fingerprint from QR pairing.
         const wsTransport = new WebSocketTransport({
           host: '0.0.0.0',
           port: this.wsPort
         })
 
-        // Why: WebSocket transport uses dispatchStreaming which can emit
-        // multiple responses for subscription methods. Auth validation
-        // happens before dispatch.
-        wsTransport.onMessage((msg, reply, ws) => {
-          void this.handleWebSocketMessage(msg, reply, wsTransport, ws)
+        // Why: each WebSocket connection gets an E2EE channel that handles the
+        // handshake before any RPC messages are processed. The channel decrypts
+        // inbound messages and encrypts outbound replies transparently.
+        wsTransport.onMessage((msg, _reply, ws) => {
+          let channel = this.e2eeChannels.get(ws)
+          if (!channel) {
+            channel = new E2EEChannel(ws, {
+              serverSecretKey: this.e2eeKeypair!.secretKey,
+              validateToken: (token) => this.deviceRegistry?.validateToken(token) != null,
+              onReady: (ch) => {
+                if (ch.deviceToken) {
+                  wsTransport.setClientId(ws, ch.deviceToken)
+                }
+              },
+              onError: (code, reason) => {
+                this.e2eeChannels.get(ws)?.destroy()
+                this.e2eeChannels.delete(ws)
+                ws.close(code, reason)
+              }
+            })
+            channel.onMessage((plaintext, encryptedReply) => {
+              void this.handleWebSocketMessage(plaintext, encryptedReply, wsTransport, ws)
+            })
+            this.e2eeChannels.set(ws, channel)
+          }
+          channel.handleRawMessage(msg)
         })
 
         // Why: when a mobile client disconnects, the runtime must clean up
-        // connection-scoped state like mobile-fit overrides to prevent
-        // orphaned phone-fit state on the desktop terminal.
+        // connection-scoped state like mobile-fit overrides and the E2EE
+        // channel to prevent orphaned state.
         wsTransport.onConnectionClose((clientId) => {
+          for (const [ws, channel] of this.e2eeChannels) {
+            if (channel.deviceToken === clientId) {
+              channel.destroy()
+              this.e2eeChannels.delete(ws)
+              break
+            }
+          }
           this.runtime.onClientDisconnected(clientId)
         })
 

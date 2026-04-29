@@ -3,10 +3,10 @@ import { encodePairingOffer, decodePairingOffer, type PairingOffer } from './pai
 
 describe('pairing offer', () => {
   const offer: PairingOffer = {
-    v: 1,
-    endpoint: 'wss://192.168.1.10:6768',
+    v: 2,
+    endpoint: 'ws://192.168.1.10:6768',
     deviceToken: 'abcdef1234567890abcdef1234567890abcdef1234567890',
-    certFingerprint: 'sha256:deadbeef'
+    publicKeyB64: 'dGVzdC1wdWJsaWMta2V5LWJhc2U2NC1lbmNvZGVk'
   }
 
   it('encode then decode round-trips correctly', () => {
@@ -32,19 +32,19 @@ describe('pairing offer', () => {
   })
 
   it('rejects payloads with missing fields', () => {
-    const partial = { v: 1, endpoint: 'wss://host:1234' }
+    const partial = { v: 2, endpoint: 'ws://host:1234' }
     const base64 = Buffer.from(JSON.stringify(partial)).toString('base64')
     expect(() => decodePairingOffer(`orca://pair#${base64}`)).toThrow()
   })
 
   it('rejects payloads with wrong version', () => {
-    const wrong = { ...offer, v: 2 }
+    const wrong = { ...offer, v: 1 }
     const base64 = Buffer.from(JSON.stringify(wrong)).toString('base64')
     expect(() => decodePairingOffer(`orca://pair#${base64}`)).toThrow()
   })
 
-  it('rejects payloads with invalid fingerprint prefix', () => {
-    const wrong = { ...offer, certFingerprint: 'md5:abc' }
+  it('rejects payloads with missing publicKeyB64', () => {
+    const wrong = { v: 2, endpoint: 'ws://host:1234', deviceToken: 'tok' }
     const base64 = Buffer.from(JSON.stringify(wrong)).toString('base64')
     expect(() => decodePairingOffer(`orca://pair#${base64}`)).toThrow()
   })
