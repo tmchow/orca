@@ -433,10 +433,16 @@ app.whenReady().then(async () => {
       }
     }
   })
+  // Why: E2E tests launch parallel Electron instances that would all race to
+  // bind the default fixed port, crashing on EADDRINUSE. Port 0 lets the OS
+  // assign a random available port per instance while still exercising the
+  // full WebSocket startup path.
+  const isE2E = Boolean(process.env.ORCA_E2E_USER_DATA_DIR)
   runtimeRpc = new OrcaRuntimeRpcServer({
     runtime,
     userDataPath: app.getPath('userData'),
-    enableWebSocket: true
+    enableWebSocket: true,
+    ...(isE2E ? { wsPort: 0 } : {})
   })
   registerMobileHandlers(runtimeRpc)
 

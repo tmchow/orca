@@ -54,6 +54,17 @@ export class WebSocketTransport implements RpcTransport {
     this.wsClientIds.set(ws, clientId)
   }
 
+  // Why: when port 0 is passed the OS assigns a random available port. The
+  // runtime metadata and mobile QR code need the real port, so callers read
+  // it here after start() resolves.
+  get resolvedPort(): number {
+    const addr = this.httpServer?.address()
+    if (addr && typeof addr === 'object') {
+      return addr.port
+    }
+    return this.port
+  }
+
   async start(): Promise<void> {
     if (this.wss) {
       return

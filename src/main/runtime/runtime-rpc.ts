@@ -176,7 +176,7 @@ export class OrcaRuntimeRpcServer {
         activeTransports.push(wsTransport)
         transportsMeta.push({
           kind: 'websocket',
-          endpoint: `ws://0.0.0.0:${this.wsPort}`
+          endpoint: `ws://0.0.0.0:${wsTransport.resolvedPort}`
         })
       } catch (error) {
         // Why: WebSocket transport is supplementary — the runtime must still
