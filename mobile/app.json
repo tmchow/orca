@@ -15,13 +15,20 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.stably.orca.mobile"
+      "bundleIdentifier": "com.stably.orca.mobile",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Orca connects to the desktop app on your local network.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#111111"
       },
+      "usesCleartextTraffic": true,
       "allowBackup": false,
       "package": "com.stably.orca.mobile"
     },

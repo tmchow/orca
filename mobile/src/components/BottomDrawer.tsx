@@ -6,7 +6,8 @@ import {
   Platform,
   useWindowDimensions,
   ScrollView,
-  Keyboard
+  Keyboard,
+  BackHandler
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler'
@@ -91,6 +92,16 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
     }
   }, [visible, insets.bottom])
 
+  useEffect(() => {
+    if (!visible) return
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose()
+      return true
+    })
+    return () => sub.remove()
+  }, [visible, onClose])
+
   const dismiss = useCallback(() => {
     onClose()
   }, [onClose])
@@ -145,28 +156,41 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
   if (!mounted) return null
 
   return (
-    <Animated.View style={[styles.overlay, pointerStyle]}>
+    <Animated.View style={[styles.overlay, pointerStyle]} accessibilityViewIsModal aria-modal>
       <GestureHandlerRootView style={styles.root}>
         <Animated.View style={[styles.backdrop, backdropStyle]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} />
         </Animated.View>
 
         <View style={styles.anchor} pointerEvents="box-none">
-          <GestureDetector gesture={panGesture}>
-            <Animated.View
-              style={[styles.drawer, { paddingBottom: insets.bottom + spacing.lg }, drawerStyle]}
-            >
-              <View style={styles.handle} />
-              <ScrollView
-                bounces={false}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
+          <Animated.View
+            style={[
+              styles.drawer,
+              {
+                maxHeight: screenHeight - insets.top - spacing.lg,
+                paddingBottom: insets.bottom + spacing.lg
+              },
+              drawerStyle
+            ]}
+          >
+            <GestureDetector gesture={panGesture}>
+              <Animated.View
+                style={styles.handleHitArea}
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss drawer"
               >
-                {children}
-              </ScrollView>
-              <View style={styles.bottomExtension} />
-            </Animated.View>
-          </GestureDetector>
+                <View style={styles.handle} />
+              </Animated.View>
+            </GestureDetector>
+            <ScrollView
+              bounces={false}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {children}
+            </ScrollView>
+            <View style={styles.bottomExtension} />
+          </Animated.View>
         </View>
       </GestureHandlerRootView>
     </Animated.View>
@@ -210,9 +234,12 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     backgroundColor: colors.textMuted,
-    marginTop: spacing.sm,
-    marginBottom: spacing.md,
     opacity: 0.4
+  },
+  handleHitArea: {
+    alignItems: 'center',
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md
   },
   bottomExtension: {
     position: 'absolute',

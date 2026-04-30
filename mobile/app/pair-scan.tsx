@@ -49,12 +49,13 @@ export default function PairScanScreen() {
 
   async function testAndSave(offer: PairingOffer) {
     setStatus('connecting')
-
-    const client = connect(offer.endpoint, offer.deviceToken, offer.publicKeyB64)
+    let client: ReturnType<typeof connect> | null = null
 
     try {
+      client = connect(offer.endpoint, offer.deviceToken, offer.publicKeyB64)
       const response = await client.sendRequest('status.get')
       client.close()
+      client = null
 
       if (!response.ok) {
         if (response.error.code === 'unauthorized') {
@@ -86,6 +87,8 @@ export default function PairScanScreen() {
       setStatus('error')
       setErrorMessage('Cannot connect — check that your computer is on the same network')
       processingRef.current = false
+    } finally {
+      client?.close()
     }
   }
 

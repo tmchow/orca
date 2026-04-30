@@ -66,8 +66,10 @@ export function connect(
     state = next
     if (next === 'connected') {
       for (const w of connectWaiters.splice(0)) w.resolve()
-    } else if (next === 'disconnected') {
-      for (const w of connectWaiters.splice(0)) w.reject(new Error('Connection closed'))
+    } else if (next === 'disconnected' || next === 'auth-failed') {
+      const reason =
+        next === 'auth-failed' ? 'Unauthorized — pairing may be revoked' : 'Connection closed'
+      for (const w of connectWaiters.splice(0)) w.reject(new Error(reason))
     }
     for (const listener of stateListeners) {
       listener(next)
@@ -224,6 +226,7 @@ export function connect(
         rejectAllPending('Connection closed')
         return
       }
+      rejectAllPending('Connection interrupted')
       setState('reconnecting')
       scheduleReconnect()
     }
@@ -249,10 +252,12 @@ export function connect(
     }
   }
 
-  function sendEncrypted(request: RpcRequest) {
+  function sendEncrypted(request: RpcRequest): boolean {
     if (ws && ws.readyState === WebSocket.OPEN && sharedKey) {
       ws.send(encrypt(JSON.stringify(request), sharedKey))
+      return true
     }
+    return false
   }
 
   openConnection()
@@ -279,7 +284,11 @@ export function connect(
           }
         })
 
-        sendEncrypted({ id, deviceToken, method, params })
+        if (!sendEncrypted({ id, deviceToken, method, params })) {
+          pending.delete(id)
+          clearTimeout(timeout)
+          reject(new Error('Connection interrupted'))
+        }
       })
     },
 
@@ -294,20 +303,21 @@ export function connect(
       return () => {
         const stream = streamListeners.get(id)
         streamListeners.delete(id)
-        sendEncrypted({
-          id: nextId(),
-          deviceToken,
-          method: 'terminal.unsubscribe',
-          // Why: the runtime keys terminal subscription cleanup by terminal
-          // handle, not by the RPC request id used to open the stream.
-          params:
-            stream?.method === 'terminal.subscribe' &&
-            stream.params &&
-            typeof stream.params === 'object' &&
-            typeof (stream.params as { terminal?: unknown }).terminal === 'string'
-              ? { subscriptionId: (stream.params as { terminal: string }).terminal }
-              : { subscriptionId: id }
-        })
+        if (
+          stream?.method === 'terminal.subscribe' &&
+          stream.params &&
+          typeof stream.params === 'object' &&
+          typeof (stream.params as { terminal?: unknown }).terminal === 'string'
+        ) {
+          sendEncrypted({
+            id: nextId(),
+            deviceToken,
+            method: 'terminal.unsubscribe',
+            // Why: the runtime keys terminal subscription cleanup by terminal
+            // handle, not by the RPC request id used to open the stream.
+            params: { subscriptionId: (stream.params as { terminal: string }).terminal }
+          })
+        }
       }
     },
 

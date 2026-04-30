@@ -269,7 +269,12 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!visible || !client) return
+    if (!visible) {
+      setShowRepoPicker(false)
+      setShowAgentPicker(false)
+      return
+    }
+    if (!client) return
     let stale = false
     setName('')
     setNote('')
@@ -526,7 +531,7 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
       {/* Sub-modals for pickers — rendered outside the main modal so they
           layer on top and scroll without touch conflicts. */}
       <PickerListModal
-        visible={showRepoPicker}
+        visible={visible && showRepoPicker}
         title="Repository"
         items={repos.map((r) => ({ id: r.id, label: r.displayName, _repo: r }))}
         selectedId={selectedRepo?.id ?? ''}
@@ -535,7 +540,7 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
       />
 
       <PickerListModal
-        visible={showAgentPicker}
+        visible={visible && showAgentPicker}
         title="Agent"
         items={ALL_AGENTS}
         selectedId={selectedAgent.id}

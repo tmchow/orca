@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import {
   View,
   Text,
@@ -113,6 +113,12 @@ export default function TroubleshootScreen() {
   const [diagnosticStatus, setDiagnosticStatus] = useState<DiagnosticStatus>('idle')
   const [checks, setChecks] = useState<CheckResult[]>([])
   const abortRef = useRef(false)
+
+  useEffect(() => {
+    return () => {
+      abortRef.current = true
+    }
+  }, [])
 
   const toggleSection = useCallback((id: string) => {
     setExpandedId((prev) => (prev === id ? null : id))

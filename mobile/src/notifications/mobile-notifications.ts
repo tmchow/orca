@@ -70,26 +70,42 @@ export function subscribeToDesktopNotifications(client: RpcClient): () => void {
   configureNotificationChannel()
 
   let subscriptionId: string | null = null
+  let disposed = false
+  function unsubscribeServer(id: string) {
+    if (client.getState() === 'connected') {
+      client.sendRequest('notifications.unsubscribe', { subscriptionId: id }).catch(() => {})
+    }
+  }
+
   const unsubscribeStream = client.subscribe('notifications.subscribe', {}, (data: unknown) => {
     const event = data as NotificationEvent | SubscribeResult | { type: 'end' }
     if (event.type === 'ready') {
       subscriptionId = (event as SubscribeResult).subscriptionId
+      if (disposed) {
+        unsubscribeServer(subscriptionId)
+        unsubscribeStream()
+      }
       return
     }
-    if (event.type === 'end') return
+    if (event.type === 'end') {
+      if (disposed) unsubscribeStream()
+      return
+    }
+    if (disposed) return
     if (event.type === 'notification') {
       void showLocalNotification(event as NotificationEvent)
     }
   })
 
   return () => {
-    unsubscribeStream()
+    disposed = true
     // Why: the client may already be closed when this cleanup runs (component
     // unmount races with disconnect). sendRequest rejects immediately on a
     // closed client — swallow it since server-side cleanup happens via
     // connection-close anyway.
-    if (subscriptionId && client.getState() === 'connected') {
-      client.sendRequest('notifications.unsubscribe', { subscriptionId }).catch(() => {})
+    if (subscriptionId) {
+      unsubscribeStream()
+      unsubscribeServer(subscriptionId)
     }
   }
 }

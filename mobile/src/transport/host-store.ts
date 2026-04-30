@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import type { HostProfile } from './types'
+import { HostProfileSchema, type HostProfile } from './types'
 
 const STORAGE_KEY = 'orca:hosts'
 
@@ -7,7 +7,12 @@ export async function loadHosts(): Promise<HostProfile[]> {
   const raw = await AsyncStorage.getItem(STORAGE_KEY)
   if (!raw) return []
   try {
-    return JSON.parse(raw) as HostProfile[]
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.flatMap((item) => {
+      const result = HostProfileSchema.safeParse(item)
+      return result.success ? [result.data] : []
+    })
   } catch {
     return []
   }

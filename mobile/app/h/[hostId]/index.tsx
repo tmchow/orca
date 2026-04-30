@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   View,
   Text,
@@ -239,6 +239,7 @@ export default function HostScreen() {
     hostId ? (getCachedWorktrees(hostId) as Worktree[] | null) : null
   )
   const [client, setClient] = useState<RpcClient | null>(null)
+  const clientRef = useRef<RpcClient | null>(null)
   const [connState, setConnState] = useState<ConnectionState>('disconnected')
   const [worktrees, setWorktrees] = useState<Worktree[]>(initialCache ?? [])
   const [worktreesLoaded, setWorktreesLoaded] = useState(initialCache != null)
@@ -276,8 +277,10 @@ export default function HostScreen() {
   // Load persisted pins and preferences
   useEffect(() => {
     if (!hostId) return
+    let stale = false
     void (async () => {
       const [pins, prefs] = await Promise.all([loadPinnedIds(hostId), loadPreferences(hostId)])
+      if (stale) return
       setPinnedIds(pins)
       setSortMode(prefs.sortMode as SortMode)
       setFilters({
@@ -288,11 +291,19 @@ export default function HostScreen() {
       setCollapsedGroups(new Set(prefs.collapsedGroups))
       setPrefsLoaded(true)
     })()
+    return () => {
+      stale = true
+    }
   }, [hostId])
 
   useEffect(() => {
     let disposed = false
     let rpcClient: RpcClient | null = null
+    clientRef.current = null
+    setClient(null)
+    setConnState('connecting')
+    setHostName('')
+    setError('')
     // Why: re-seed from the current host's cache on every hostId change.
     // The useState initializer only runs on first mount, so if Expo Router
     // reuses this screen with a different hostId, we must reset here.
@@ -331,6 +342,7 @@ export default function HostScreen() {
           return
         }
         setHostName(host.name)
+        clientRef.current = rpcClient
         setClient(rpcClient)
 
         await updateLastConnected(host.id)
@@ -341,14 +353,20 @@ export default function HostScreen() {
       disposed = true
       cancelAnimationFrame(rafId)
       rpcClient?.close()
+      if (clientRef.current === rpcClient) {
+        clientRef.current = null
+      }
     }
   }, [hostId])
 
   const fetchWorktrees = useCallback(async () => {
     if (!client || connState !== 'connected') return
+    const requestClient = client
+    const requestHostId = hostId
 
     try {
-      const response = await client.sendRequest('worktree.ps')
+      const response = await requestClient.sendRequest('worktree.ps')
+      if (clientRef.current !== requestClient || hostId !== requestHostId) return
       if (response.ok) {
         const result = (response as RpcSuccess).result as { worktrees: Worktree[] }
         setWorktrees(result.worktrees)

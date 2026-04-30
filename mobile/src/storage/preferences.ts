@@ -33,12 +33,25 @@ const DEFAULT_PREFS: HostPreferences = {
   collapsedGroups: [],
   selectedRepos: []
 }
+const SORT_MODES = new Set(['smart', 'recent', 'name'])
+const FILTER_MODES = new Set(['all', 'active'])
+const GROUP_MODES = new Set(['none', 'repo', 'prStatus'])
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
+}
+
+function allowedString(value: unknown, allowed: Set<string>, fallback: string): string {
+  return typeof value === 'string' && allowed.has(value) ? value : fallback
+}
 
 export async function loadPinnedIds(hostId: string): Promise<Set<string>> {
   try {
     const raw = await AsyncStorage.getItem(PINS_PREFIX + hostId)
     if (!raw) return new Set()
-    return new Set(JSON.parse(raw) as string[])
+    return new Set(stringArray(JSON.parse(raw)))
   } catch {
     return new Set()
   }
@@ -52,7 +65,14 @@ export async function loadPreferences(hostId: string): Promise<HostPreferences> 
   try {
     const raw = await AsyncStorage.getItem(PREFS_PREFIX + hostId)
     if (!raw) return DEFAULT_PREFS
-    return { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<HostPreferences>) }
+    const parsed = JSON.parse(raw) as Partial<HostPreferences>
+    return {
+      sortMode: allowedString(parsed.sortMode, SORT_MODES, DEFAULT_PREFS.sortMode),
+      filterMode: allowedString(parsed.filterMode, FILTER_MODES, DEFAULT_PREFS.filterMode),
+      groupMode: allowedString(parsed.groupMode, GROUP_MODES, DEFAULT_PREFS.groupMode),
+      collapsedGroups: stringArray(parsed.collapsedGroups),
+      selectedRepos: stringArray(parsed.selectedRepos)
+    }
   } catch {
     return DEFAULT_PREFS
   }

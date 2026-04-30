@@ -324,8 +324,10 @@ const XTERM_HTML = `<!DOCTYPE html>
     } else if (msg.type === 'write') {
       write(msg.data);
     } else if (msg.type === 'clear') {
+      terminalGeneration++;
       writeQueue = [];
       afterDrainCallbacks = [];
+      writesDraining = false;
       if (term) { term.clear(); term.reset(); }
     } else if (msg.type === 'measure') {
       measureFitDimensions();
@@ -573,6 +575,7 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
       measureFitDimensions(): Promise<{ cols: number; rows: number } | null> {
         if (!isWebReadyRef.current) return Promise.resolve(null)
         return new Promise((resolve) => {
+          measureResolveRef.current?.(null)
           measureResolveRef.current = resolve
           sendToWebView({ type: 'measure' })
           // Why: if the WebView doesn't respond within 2s (e.g., xterm

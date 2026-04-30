@@ -51,3 +51,12 @@ export type HostProfile = {
   publicKeyB64: string
   lastConnected: number
 }
+
+export const HostProfileSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  endpoint: z.string().min(1),
+  deviceToken: z.string().min(1),
+  publicKeyB64: z.string().min(1),
+  lastConnected: z.number().finite()
+})

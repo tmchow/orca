@@ -4,7 +4,6 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { useRouter, useFocusEffect } from 'expo-router'
 import {
   Monitor,
-  MoreHorizontal,
   QrCode,
   Settings,
   Bot,
@@ -21,12 +20,11 @@ import { subscribeToDesktopNotifications } from '../src/notifications/mobile-not
 import type { ConnectionState, HostProfile } from '../src/transport/types'
 import { triggerMediumImpact } from '../src/platform/haptics'
 import { OrcaLogo } from '../src/components/OrcaLogo'
-import { StatusDot } from '../src/components/StatusDot'
 import { TextInputModal } from '../src/components/TextInputModal'
 import { ActionSheetModal } from '../src/components/ActionSheetModal'
 import { ConfirmModal } from '../src/components/ConfirmModal'
 import { setCachedWorktrees, getCachedWorktrees } from '../src/cache/worktree-cache'
-import { colors, spacing, radii, typography } from '../src/theme/mobile-theme'
+import { colors, spacing, radii } from '../src/theme/mobile-theme'
 
 function endpointLabel(endpoint: string): string {
   try {
@@ -104,6 +102,18 @@ function fetchWorktreeInfo(
   ) => void,
   disposed: () => boolean
 ) {
+  const markLoaded = () => {
+    setInfo((prev) => ({
+      ...prev,
+      [hostId]: {
+        hostId,
+        totalWorktrees: 0,
+        activeCount: 0,
+        lastActiveWorktree: null
+      }
+    }))
+  }
+
   client
     .sendRequest('worktree.ps')
     .then((response) => {
@@ -124,9 +134,13 @@ function fetchWorktreeInfo(
             lastActiveWorktree: lastActive
           }
         }))
+      } else {
+        markLoaded()
       }
     })
-    .catch(() => {})
+    .catch(() => {
+      if (!disposed()) markLoaded()
+    })
 }
 
 // Why: repo names get a stable color derived from hashing, matching the
@@ -259,6 +273,20 @@ export default function HomeScreen() {
     }
     return null
   }, [sortedHosts, hostStates, worktreeInfo, lastVisited])
+
+  const resumeLoading = useMemo(
+    () =>
+      sortedHosts.some((host) => {
+        const state = hostStates[host.id] ?? 'connecting'
+        return (
+          state === 'connecting' ||
+          state === 'handshaking' ||
+          state === 'reconnecting' ||
+          (state === 'connected' && !worktreeInfo[host.id])
+        )
+      }),
+    [sortedHosts, hostStates, worktreeInfo]
+  )
 
   async function handleRename(newName: string) {
     if (!renameTarget) return
@@ -423,7 +451,7 @@ export default function HomeScreen() {
           ListFooterComponent={
             <View>
               {/* ─── Resume card ─── */}
-              {resumeWorktree && (
+              {resumeWorktree ? (
                 <>
                   <Text style={[styles.sectionHeading, { marginTop: spacing.xl }]}>Resume</Text>
                   <Pressable
@@ -458,7 +486,18 @@ export default function HomeScreen() {
                     <ChevronRight size={16} color={colors.textMuted} />
                   </Pressable>
                 </>
-              )}
+              ) : hosts.length > 0 && resumeLoading ? (
+                <>
+                  <Text style={[styles.sectionHeading, { marginTop: spacing.xl }]}>Resume</Text>
+                  <View style={styles.resumeCard}>
+                    <View style={[styles.resumeIcon, styles.skeletonBlock]} />
+                    <View style={styles.resumeMain}>
+                      <View style={[styles.skeletonLine, { width: '55%' }]} />
+                      <View style={[styles.skeletonLine, { width: '35%', marginTop: 6 }]} />
+                    </View>
+                  </View>
+                </>
+              ) : null}
 
               {/* ─── Quick actions ─── */}
               <Text style={[styles.sectionHeading, { marginTop: spacing.xl }]}>Quick Actions</Text>
@@ -772,6 +811,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textSecondary,
     flex: 1
+  },
+
+  /* ─── Skeleton ─── */
+  skeletonBlock: {
+    backgroundColor: colors.bgRaised,
+    opacity: 0.5
+  },
+  skeletonLine: {
+    height: 12,
+    borderRadius: 4,
+    backgroundColor: colors.bgRaised,
+    opacity: 0.5
   },
 
   /* ─── Quick actions ─── */

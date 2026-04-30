@@ -167,6 +167,7 @@ export default function SessionScreen() {
   // the current value to avoid re-fitting while a fit is already in progress.
   const fitPendingRef = useRef(false)
   fitPendingRef.current = fitPending
+  const clientRef = useRef<RpcClient | null>(null)
   // Why: tracks terminals the user explicitly restored to desktop size.
   // Without this, switching away and back would auto-fit them again.
   const manuallyRestoredRef = useRef<Set<string>>(new Set())
@@ -283,9 +284,17 @@ export default function SessionScreen() {
     async (handle: string, rpcClient: RpcClient) => {
       const clientId = deviceTokenRef.current
       if (!clientId) return
+      const seq = subscribeSeqRef.current.get(handle)
 
       const dims = await getTerminalRef(handle)?.measureFitDimensions()
       if (!dims) return
+      if (
+        clientRef.current !== rpcClient ||
+        !terminalRefs.current.has(handle) ||
+        subscribeSeqRef.current.get(handle) !== seq
+      ) {
+        return
+      }
 
       const response = await rpcClient.sendRequest('terminal.resizeForClient', {
         terminal: handle,
@@ -295,6 +304,13 @@ export default function SessionScreen() {
         clientId
       })
       if (!response.ok) return
+      if (
+        clientRef.current !== rpcClient ||
+        !terminalRefs.current.has(handle) ||
+        subscribeSeqRef.current.get(handle) !== seq
+      ) {
+        return
+      }
 
       updateFittedHandles((prev) => new Set(prev).add(handle))
       resubscribeWithoutFocus(handle)
@@ -303,44 +319,58 @@ export default function SessionScreen() {
     [getTerminalRef, resubscribeWithoutFocus, updateFittedHandles]
   )
 
-  const handleFitToPhone = useCallback(async () => {
-    if (!client || !activeHandle || fitPending) return
+  const handleFitToPhone = useCallback(
+    async (targetHandle = activeHandle) => {
+      if (!client || !targetHandle || fitPending) return
 
-    manuallyRestoredRef.current.delete(activeHandle)
-    setFitPending(true)
-    try {
-      await fitToPhoneCore(activeHandle, client)
-    } finally {
-      setFitPending(false)
-    }
-  }, [client, activeHandle, fitPending, fitToPhoneCore])
+      manuallyRestoredRef.current.delete(targetHandle)
+      setFitPending(true)
+      try {
+        await fitToPhoneCore(targetHandle, client)
+      } finally {
+        setFitPending(false)
+      }
+    },
+    [client, activeHandle, fitPending, fitToPhoneCore]
+  )
 
-  const handleRestoreDesktopSize = useCallback(async () => {
-    if (!client || !activeHandle) return
-    const handle = activeHandle
-    const clientId = deviceTokenRef.current
-    if (!clientId) return
+  const handleRestoreDesktopSize = useCallback(
+    async (targetHandle = activeHandle) => {
+      if (!client || !targetHandle) return
+      const handle = targetHandle
+      const clientId = deviceTokenRef.current
+      if (!clientId) return
+      const seq = subscribeSeqRef.current.get(handle)
 
-    try {
-      const response = await client.sendRequest('terminal.resizeForClient', {
-        terminal: handle,
-        mode: 'restore',
-        clientId
-      })
-      if (!response.ok) return
+      try {
+        const response = await client.sendRequest('terminal.resizeForClient', {
+          terminal: handle,
+          mode: 'restore',
+          clientId
+        })
+        if (!response.ok) return
+        if (
+          clientRef.current !== client ||
+          !terminalRefs.current.has(handle) ||
+          subscribeSeqRef.current.get(handle) !== seq
+        ) {
+          return
+        }
 
-      manuallyRestoredRef.current.add(handle)
-      updateFittedHandles((prev) => {
-        const next = new Set(prev)
-        next.delete(handle)
-        return next
-      })
-      resubscribeWithoutFocus(handle)
-      setTimeout(() => getTerminalRef(handle)?.resetZoom(), 500)
-    } catch {
-      // Restore failed — keep current state.
-    }
-  }, [client, activeHandle, getTerminalRef, resubscribeWithoutFocus, updateFittedHandles])
+        manuallyRestoredRef.current.add(handle)
+        updateFittedHandles((prev) => {
+          const next = new Set(prev)
+          next.delete(handle)
+          return next
+        })
+        resubscribeWithoutFocus(handle)
+        setTimeout(() => getTerminalRef(handle)?.resetZoom(), 500)
+      } catch {
+        // Restore failed — keep current state.
+      }
+    },
+    [client, activeHandle, getTerminalRef, resubscribeWithoutFocus, updateFittedHandles]
+  )
 
   useEffect(() => {
     let disposed = false
@@ -360,12 +390,16 @@ export default function SessionScreen() {
         return
       }
       setClient(rpcClient)
+      clientRef.current = rpcClient
     })()
 
     return () => {
       disposed = true
       clearTerminalCache()
       rpcClient?.close()
+      if (clientRef.current === rpcClient) {
+        clientRef.current = null
+      }
     }
   }, [clearTerminalCache, hostId])
 
@@ -1028,8 +1062,11 @@ export default function SessionScreen() {
                   label: 'Restore Desktop Size',
                   icon: Monitor,
                   onPress: () => {
+                    const target = actionTarget
                     setActionTarget(null)
-                    void handleRestoreDesktopSize()
+                    if (target) {
+                      void handleRestoreDesktopSize(target.handle)
+                    }
                   }
                 }
               ]
@@ -1038,8 +1075,11 @@ export default function SessionScreen() {
                   label: fitPending ? 'Fitting…' : 'Fit to Phone',
                   icon: Smartphone,
                   onPress: () => {
+                    const target = actionTarget
                     setActionTarget(null)
-                    void handleFitToPhone()
+                    if (target) {
+                      void handleFitToPhone(target.handle)
+                    }
                   }
                 }
               ]),
