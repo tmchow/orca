@@ -10,9 +10,18 @@ type CachedWorktrees = {
 const cache = new Map<string, CachedWorktrees>()
 
 const MAX_AGE_MS = 30_000
+const MAX_ENTRIES = 20
 
 export function setCachedWorktrees(hostId: string, worktrees: unknown[]): void {
+  // Why: Map.set on an existing key does not move it to the end of iteration
+  // order. Delete first so the re-inserted key becomes the newest entry,
+  // giving us true LRU eviction when the cap is hit.
+  cache.delete(hostId)
   cache.set(hostId, { worktrees, at: Date.now() })
+  if (cache.size > MAX_ENTRIES) {
+    const oldest = cache.keys().next().value
+    if (oldest) cache.delete(oldest)
+  }
 }
 
 export function getCachedWorktrees(hostId: string): unknown[] | null {

@@ -265,144 +265,6 @@ const XTERM_HTML = `<!DOCTYPE html>
       writeQueue.push(replayData);
     }
 
-    // Why: prevent taps from being interpreted as cursor positioning or
-    // mouse-report events by the TUI running in the terminal. On mobile
-    // the terminal is read-only — taps should do nothing, not jump the
-    // cursor.
-    surface.addEventListener('mousedown', function(e) { e.preventDefault(); e.stopPropagation(); }, true);
-    surface.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); }, true);
-
-    // Why: all touch gestures are handled here instead of relying on the
-    // WebView's native scroll/zoom. Native zoom operates on the HTML page
-    // boundaries, which breaks at the edges (can't zoom on bottom text).
-    // Our handler zooms the terminal surface CSS transform directly, so
-    // it works at any position. Single-finger at 1x = xterm scrollback
-    // with scale-compensated sensitivity + momentum. Single-finger when
-    // zoomed = pan. Two-finger = pinch-to-zoom centered on pinch point.
-    var ts = {
-      lastX: 0, lastY: 0, lastTime: 0, velY: 0,
-      accumDelta: 0, momentumId: null, isPinching: false,
-      pinchDist: 0, pinchScale: 0, pinchSurfX: 0, pinchSurfY: 0
-    };
-
-    function getDistance(a, b) {
-      var dx = a.clientX - b.clientX, dy = a.clientY - b.clientY;
-      return Math.sqrt(dx * dx + dy * dy);
-    }
-
-    surface.addEventListener('touchstart', function(e) {
-      if (ts.momentumId) {
-        cancelAnimationFrame(ts.momentumId);
-        ts.momentumId = null;
-      }
-      if (e.touches.length === 2) {
-        ts.isPinching = true;
-        ts.pinchDist = getDistance(e.touches[0], e.touches[1]);
-        ts.pinchScale = userScale;
-        var mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        var total = getTotalScale();
-        ts.pinchSurfX = (mx - panX) / total;
-        ts.pinchSurfY = (my - panY) / total;
-      } else if (e.touches.length === 1) {
-        ts.isPinching = false;
-        ts.lastX = e.touches[0].clientX;
-        ts.lastY = e.touches[0].clientY;
-        ts.lastTime = Date.now();
-        ts.velY = 0;
-        ts.accumDelta = 0;
-      }
-    }, { capture: true, passive: true });
-
-    surface.addEventListener('touchmove', function(e) {
-      if (!term) return;
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (e.touches.length === 2) {
-        ts.isPinching = true;
-        var dist = getDistance(e.touches[0], e.touches[1]);
-        var mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-
-        var ratio = dist / ts.pinchDist;
-        userScale = Math.max(1, Math.min(5, ts.pinchScale * ratio));
-
-        var total = getTotalScale();
-        panX = mx - ts.pinchSurfX * total;
-        panY = my - ts.pinchSurfY * total;
-        clampPan();
-        updateTransform();
-
-      } else if (e.touches.length === 1 && !ts.isPinching) {
-        var x = e.touches[0].clientX;
-        var y = e.touches[0].clientY;
-        var now = Date.now();
-        var dt = now - ts.lastTime;
-
-        if (userScale > 1.05) {
-          panX += x - ts.lastX;
-          panY += y - ts.lastY;
-          clampPan();
-          updateTransform();
-        } else {
-          var deltaY = ts.lastY - y;
-          if (dt > 0) ts.velY = deltaY / dt;
-          ts.lastTime = now;
-          var effectiveCellH = getCellHeight() * currentScale;
-          ts.accumDelta += deltaY;
-          var lines = Math.trunc(ts.accumDelta / effectiveCellH);
-          if (lines !== 0) {
-            ts.accumDelta -= lines * effectiveCellH;
-            term.scrollLines(lines);
-          }
-        }
-        ts.lastX = x;
-        ts.lastY = y;
-      }
-    }, { capture: true, passive: false });
-
-    surface.addEventListener('touchend', function(e) {
-      if (!term) return;
-
-      if (ts.isPinching && e.touches.length < 2) {
-        ts.isPinching = false;
-        if (userScale < 1.05) {
-          userScale = 1; panX = 0; panY = 0;
-          updateTransform();
-        }
-        if (e.touches.length === 1) {
-          ts.lastX = e.touches[0].clientX;
-          ts.lastY = e.touches[0].clientY;
-          ts.lastTime = Date.now();
-          ts.velY = 0;
-          ts.accumDelta = 0;
-        }
-        return;
-      }
-
-      if (e.touches.length === 0 && userScale <= 1.05) {
-        var vel = ts.velY;
-        var FRICTION = 0.95;
-        var MIN_VEL = 0.02;
-        function momentumStep() {
-          vel *= FRICTION;
-          if (Math.abs(vel) < MIN_VEL) { ts.momentumId = null; return; }
-          var effectiveCellH = getCellHeight() * currentScale;
-          ts.accumDelta += vel * 16;
-          var lines = Math.trunc(ts.accumDelta / effectiveCellH);
-          if (lines !== 0) {
-            ts.accumDelta -= lines * effectiveCellH;
-            term.scrollLines(lines);
-          }
-          ts.momentumId = requestAnimationFrame(momentumStep);
-        }
-        if (Math.abs(vel) > MIN_VEL) {
-          ts.momentumId = requestAnimationFrame(momentumStep);
-        }
-      }
-    }, { capture: true, passive: true });
-
     requestAnimationFrame(function() {
       if (gen !== terminalGeneration) return;
       ready = true;
@@ -471,6 +333,136 @@ const XTERM_HTML = `<!DOCTYPE html>
       applyFitScale();
     }
   }
+
+  // Why: event listeners are registered once here (not inside init()) so
+  // they don't accumulate on re-init. They close over the mutable 'term'
+  // variable, so they always reference the current terminal instance.
+  surface.addEventListener('mousedown', function(e) { e.preventDefault(); e.stopPropagation(); }, true);
+  surface.addEventListener('click', function(e) { e.preventDefault(); e.stopPropagation(); }, true);
+
+  var ts = {
+    lastX: 0, lastY: 0, lastTime: 0, velY: 0,
+    accumDelta: 0, momentumId: null, isPinching: false,
+    pinchDist: 0, pinchScale: 0, pinchSurfX: 0, pinchSurfY: 0
+  };
+
+  function getDistance(a, b) {
+    var dx = a.clientX - b.clientX, dy = a.clientY - b.clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  surface.addEventListener('touchstart', function(e) {
+    if (ts.momentumId) {
+      cancelAnimationFrame(ts.momentumId);
+      ts.momentumId = null;
+    }
+    if (e.touches.length === 2) {
+      ts.isPinching = true;
+      ts.pinchDist = getDistance(e.touches[0], e.touches[1]);
+      ts.pinchScale = userScale;
+      var mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      var total = getTotalScale();
+      ts.pinchSurfX = (mx - panX) / total;
+      ts.pinchSurfY = (my - panY) / total;
+    } else if (e.touches.length === 1) {
+      ts.isPinching = false;
+      ts.lastX = e.touches[0].clientX;
+      ts.lastY = e.touches[0].clientY;
+      ts.lastTime = Date.now();
+      ts.velY = 0;
+      ts.accumDelta = 0;
+    }
+  }, { capture: true, passive: true });
+
+  surface.addEventListener('touchmove', function(e) {
+    if (!term) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.touches.length === 2) {
+      ts.isPinching = true;
+      var dist = getDistance(e.touches[0], e.touches[1]);
+      var mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+      var ratio = dist / ts.pinchDist;
+      userScale = Math.max(1, Math.min(5, ts.pinchScale * ratio));
+
+      var total = getTotalScale();
+      panX = mx - ts.pinchSurfX * total;
+      panY = my - ts.pinchSurfY * total;
+      clampPan();
+      updateTransform();
+
+    } else if (e.touches.length === 1 && !ts.isPinching) {
+      var x = e.touches[0].clientX;
+      var y = e.touches[0].clientY;
+      var now = Date.now();
+      var dt = now - ts.lastTime;
+
+      if (userScale > 1.05) {
+        panX += x - ts.lastX;
+        panY += y - ts.lastY;
+        clampPan();
+        updateTransform();
+      } else {
+        var deltaY = ts.lastY - y;
+        if (dt > 0) ts.velY = deltaY / dt;
+        ts.lastTime = now;
+        var effectiveCellH = getCellHeight() * currentScale;
+        ts.accumDelta += deltaY;
+        var lines = Math.trunc(ts.accumDelta / effectiveCellH);
+        if (lines !== 0) {
+          ts.accumDelta -= lines * effectiveCellH;
+          term.scrollLines(lines);
+        }
+      }
+      ts.lastX = x;
+      ts.lastY = y;
+    }
+  }, { capture: true, passive: false });
+
+  surface.addEventListener('touchend', function(e) {
+    if (!term) return;
+
+    if (ts.isPinching && e.touches.length < 2) {
+      ts.isPinching = false;
+      if (userScale < 1.05) {
+        userScale = 1; panX = 0; panY = 0;
+        updateTransform();
+      }
+      if (e.touches.length === 1) {
+        ts.lastX = e.touches[0].clientX;
+        ts.lastY = e.touches[0].clientY;
+        ts.lastTime = Date.now();
+        ts.velY = 0;
+        ts.accumDelta = 0;
+      }
+      return;
+    }
+
+    if (e.touches.length === 0 && userScale <= 1.05) {
+      var vel = ts.velY;
+      var FRICTION = 0.95;
+      var MIN_VEL = 0.02;
+      function momentumStep() {
+        vel *= FRICTION;
+        if (Math.abs(vel) < MIN_VEL) { ts.momentumId = null; return; }
+        var effectiveCellH = getCellHeight() * currentScale;
+        ts.accumDelta += vel * 16;
+        var lines = Math.trunc(ts.accumDelta / effectiveCellH);
+        if (lines !== 0) {
+          ts.accumDelta -= lines * effectiveCellH;
+          term.scrollLines(lines);
+        }
+        ts.momentumId = requestAnimationFrame(momentumStep);
+      }
+      if (Math.abs(vel) > MIN_VEL) {
+        ts.momentumId = requestAnimationFrame(momentumStep);
+      }
+    }
+  }, { capture: true, passive: true });
 
   window.addEventListener('message', function(e) {
     try {

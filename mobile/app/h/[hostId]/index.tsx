@@ -235,14 +235,16 @@ function buildSections(
 export default function HostScreen() {
   const { hostId, action } = useLocalSearchParams<{ hostId: string; action?: string }>()
   const router = useRouter()
-  const cached = hostId ? (getCachedWorktrees(hostId) as Worktree[] | null) : null
+  const [initialCache] = useState(() =>
+    hostId ? (getCachedWorktrees(hostId) as Worktree[] | null) : null
+  )
   const [client, setClient] = useState<RpcClient | null>(null)
   const [connState, setConnState] = useState<ConnectionState>('disconnected')
-  const [worktrees, setWorktrees] = useState<Worktree[]>(cached ?? [])
-  const [worktreesLoaded, setWorktreesLoaded] = useState(cached != null)
+  const [worktrees, setWorktrees] = useState<Worktree[]>(initialCache ?? [])
+  const [worktreesLoaded, setWorktreesLoaded] = useState(initialCache != null)
   const [hostName, setHostName] = useState('')
   const [error, setError] = useState('')
-  const [lastKnownWorktrees, setLastKnownWorktrees] = useState<Worktree[]>(cached ?? [])
+  const [lastKnownWorktrees, setLastKnownWorktrees] = useState<Worktree[]>(initialCache ?? [])
   const [search, setSearch] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [sortMode, setSortMode] = useState<SortMode>('smart')
@@ -289,11 +291,20 @@ export default function HostScreen() {
   }, [hostId])
 
   useEffect(() => {
+    let disposed = false
     let rpcClient: RpcClient | null = null
-    const hasCached = hostId ? getCachedWorktrees(hostId) != null : false
-    if (!hasCached) {
+    // Why: re-seed from the current host's cache on every hostId change.
+    // The useState initializer only runs on first mount, so if Expo Router
+    // reuses this screen with a different hostId, we must reset here.
+    const freshCache = hostId ? (getCachedWorktrees(hostId) as Worktree[] | null) : null
+    if (freshCache) {
+      setWorktrees(freshCache)
+      setLastKnownWorktrees(freshCache)
+      setWorktreesLoaded(true)
+    } else {
       setWorktreesLoaded(false)
       setWorktrees([])
+      setLastKnownWorktrees([])
     }
 
     // Why: defer the RPC connection until after the navigation animation
@@ -302,16 +313,24 @@ export default function HostScreen() {
     // With cached worktrees the user sees content instantly; the live
     // connection starts once the animation settles.
     const rafId = requestAnimationFrame(() => {
+      if (disposed) return
       void (async () => {
         const hosts = await loadHosts()
         const host = hosts.find((h) => h.id === hostId)
-        if (!host) {
-          setError('Host not found')
+        if (!host || disposed) {
+          if (!host && !disposed) setError('Host not found')
           return
         }
 
+        rpcClient = connect(host.endpoint, host.deviceToken, host.publicKeyB64, (state) => {
+          if (!disposed) setConnState(state)
+        })
+        if (disposed) {
+          rpcClient.close()
+          rpcClient = null
+          return
+        }
         setHostName(host.name)
-        rpcClient = connect(host.endpoint, host.deviceToken, host.publicKeyB64, setConnState)
         setClient(rpcClient)
 
         await updateLastConnected(host.id)
@@ -319,6 +338,7 @@ export default function HostScreen() {
     })
 
     return () => {
+      disposed = true
       cancelAnimationFrame(rafId)
       rpcClient?.close()
     }
@@ -383,6 +403,19 @@ export default function HostScreen() {
     return () => clearInterval(interval)
   }, [connState, fetchWorktrees])
 
+  const updateLocalPins = useCallback(
+    (worktreeId: string, pinned: boolean) => {
+      setPinnedIds((prev) => {
+        const next = new Set(prev)
+        if (pinned) next.add(worktreeId)
+        else next.delete(worktreeId)
+        if (hostId) void savePinnedIds(hostId, next)
+        return next
+      })
+    },
+    [hostId]
+  )
+
   const togglePin = useCallback(
     (worktreeId: string) => {
       const worktree = worktrees.find((w) => w.worktreeId === worktreeId)
@@ -409,20 +442,7 @@ export default function HostScreen() {
           .catch(() => {})
       }
     },
-    [client, worktrees, pinnedIds, hostId]
-  )
-
-  const updateLocalPins = useCallback(
-    (worktreeId: string, pinned: boolean) => {
-      setPinnedIds((prev) => {
-        const next = new Set(prev)
-        if (pinned) next.add(worktreeId)
-        else next.delete(worktreeId)
-        if (hostId) void savePinnedIds(hostId, next)
-        return next
-      })
-    },
-    [hostId]
+    [client, worktrees, pinnedIds, updateLocalPins]
   )
 
   const handleDeleteWorktree = useCallback(
@@ -748,7 +768,7 @@ export default function HostScreen() {
               </Pressable>
             )
           }}
-          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          ItemSeparatorComponent={ListSeparator}
           renderItem={({ item }) => (
             <Pressable
               style={({ pressed }) => [styles.worktreeRow, pressed && styles.worktreeRowPressed]}
@@ -983,6 +1003,10 @@ export default function HostScreen() {
       />
     </SafeAreaView>
   )
+}
+
+function ListSeparator() {
+  return <View style={styles.separator} />
 }
 
 function repoColor(name: string): string {

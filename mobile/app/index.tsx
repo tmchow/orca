@@ -14,6 +14,7 @@ import {
   Terminal,
   Plus
 } from 'lucide-react-native'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { loadHosts, removeHost, renameHost } from '../src/transport/host-store'
 import { connect, type RpcClient } from '../src/transport/rpc-client'
 import { subscribeToDesktopNotifications } from '../src/notifications/mobile-notifications'
@@ -24,7 +25,7 @@ import { StatusDot } from '../src/components/StatusDot'
 import { TextInputModal } from '../src/components/TextInputModal'
 import { ActionSheetModal } from '../src/components/ActionSheetModal'
 import { ConfirmModal } from '../src/components/ConfirmModal'
-import { setCachedWorktrees } from '../src/cache/worktree-cache'
+import { setCachedWorktrees, getCachedWorktrees } from '../src/cache/worktree-cache'
 import { colors, spacing, radii, typography } from '../src/theme/mobile-theme'
 
 function endpointLabel(endpoint: string): string {
@@ -79,10 +80,15 @@ function formatDuration(ms: number): string {
   return `${totalMinutes}m`
 }
 
-function fetchStats(client: RpcClient, setStats: (s: StatsSummary) => void) {
+function fetchStats(
+  client: RpcClient,
+  setStats: (s: StatsSummary) => void,
+  disposed: () => boolean
+) {
   client
     .sendRequest('stats.summary')
     .then((response) => {
+      if (disposed()) return
       if (response.ok) {
         setStats(response.result as StatsSummary)
       }
@@ -95,11 +101,13 @@ function fetchWorktreeInfo(
   hostId: string,
   setInfo: (
     updater: (prev: Record<string, HostWorktreeInfo>) => Record<string, HostWorktreeInfo>
-  ) => void
+  ) => void,
+  disposed: () => boolean
 ) {
   client
     .sendRequest('worktree.ps')
     .then((response) => {
+      if (disposed()) return
       if (response.ok) {
         const result = response.result as { worktrees: WorktreeSummary[] }
         const worktrees = result.worktrees ?? []
@@ -141,16 +149,31 @@ export default function HomeScreen() {
   const [hostStates, setHostStates] = useState<Record<string, ConnectionState>>({})
   const [stats, setStats] = useState<StatsSummary | null>(null)
   const [worktreeInfo, setWorktreeInfo] = useState<Record<string, HostWorktreeInfo>>({})
-  const clientsRef = useRef<RpcClient[]>([])
+  const [lastVisited, setLastVisited] = useState<{ hostId: string; worktreeId: string } | null>(
+    null
+  )
+  const clientsRef = useRef<Array<{ hostId: string; client: RpcClient }>>([])
 
   useFocusEffect(
     useCallback(() => {
-      void loadHosts().then(setHosts)
-      for (const client of clientsRef.current) {
-        if (client.getState() === 'connected') {
-          fetchStats(client, setStats)
-          break
+      let stale = false
+      void loadHosts().then((h) => {
+        if (!stale) setHosts(h)
+      })
+      void AsyncStorage.getItem('orca:last-visited-worktree').then((raw) => {
+        if (stale || !raw) return
+        try {
+          setLastVisited(JSON.parse(raw))
+        } catch {}
+      })
+      for (const entry of clientsRef.current) {
+        if (entry.client.getState() === 'connected') {
+          fetchStats(entry.client, setStats, () => stale)
+          fetchWorktreeInfo(entry.client, entry.hostId, setWorktreeInfo, () => stale)
         }
+      }
+      return () => {
+        stale = true
       }
     }, [])
   )
@@ -163,7 +186,7 @@ export default function HomeScreen() {
   useEffect(() => {
     let disposed = false
     const notifCleanups: Array<() => void> = []
-    const clients = hosts.flatMap((host) => {
+    const entries = hosts.flatMap((host) => {
       if (!host.publicKeyB64 || !host.deviceToken) {
         setHostStates((prev) => ({ ...prev, [host.id]: 'auth-failed' }))
         return []
@@ -192,8 +215,8 @@ export default function HomeScreen() {
           }
           if (!statsFetched) {
             statsFetched = true
-            fetchStats(client, setStats)
-            fetchWorktreeInfo(client, host.id, setWorktreeInfo)
+            fetchStats(client, setStats, () => disposed)
+            fetchWorktreeInfo(client, host.id, setWorktreeInfo, () => disposed)
           }
         } else if (unsubNotif) {
           unsubNotif()
@@ -205,22 +228,28 @@ export default function HomeScreen() {
         unsubNotif?.()
       })
 
-      return [client]
+      return [{ hostId: host.id, client }]
     })
 
-    clientsRef.current = clients
+    clientsRef.current = entries
 
     return () => {
       disposed = true
       clientsRef.current = []
       for (const cleanup of notifCleanups) cleanup()
-      for (const client of clients) client.close()
+      for (const entry of entries) entry.client.close()
     }
   }, [hosts])
 
-  // Why: find the most recent active worktree across all connected hosts
-  // to power the "Resume" card on the home screen.
+  // Why: prefer the worktree the user last opened on this device so the
+  // "Resume" card reflects their mobile session history, not just the
+  // desktop's most-recently-outputting worktree.
   const resumeWorktree = useMemo(() => {
+    if (lastVisited && hostStates[lastVisited.hostId] === 'connected') {
+      const cached = getCachedWorktrees(lastVisited.hostId) as WorktreeSummary[] | null
+      const match = cached?.find((w) => w.worktreeId === lastVisited.worktreeId)
+      if (match) return { hostId: lastVisited.hostId, worktree: match }
+    }
     for (const host of sortedHosts) {
       if (hostStates[host.id] !== 'connected') continue
       const info = worktreeInfo[host.id]
@@ -229,20 +258,28 @@ export default function HomeScreen() {
       }
     }
     return null
-  }, [sortedHosts, hostStates, worktreeInfo])
+  }, [sortedHosts, hostStates, worktreeInfo, lastVisited])
 
   async function handleRename(newName: string) {
     if (!renameTarget) return
-    await renameHost(renameTarget.id, newName)
-    setRenameTarget(null)
-    setHosts(await loadHosts())
+    try {
+      await renameHost(renameTarget.id, newName)
+      setRenameTarget(null)
+      setHosts(await loadHosts())
+    } catch {
+      setRenameTarget(null)
+    }
   }
 
   async function handleRemove() {
     if (!confirmRemove) return
-    await removeHost(confirmRemove.id)
-    setConfirmRemove(null)
-    setHosts(await loadHosts())
+    try {
+      await removeHost(confirmRemove.id)
+      setConfirmRemove(null)
+      setHosts(await loadHosts())
+    } catch {
+      setConfirmRemove(null)
+    }
   }
 
   return (
@@ -336,7 +373,7 @@ export default function HomeScreen() {
               <Text style={styles.sectionHeading}>Desktops</Text>
             </View>
           }
-          ItemSeparatorComponent={() => <View style={styles.cardGap} />}
+          ItemSeparatorComponent={CardGap}
           renderItem={({ item }) => {
             const state = hostStates[item.id] ?? 'connecting'
             const connected = state === 'connected'
@@ -503,6 +540,10 @@ export default function HomeScreen() {
       />
     </SafeAreaView>
   )
+}
+
+function CardGap() {
+  return <View style={styles.cardGap} />
 }
 
 const ONBOARDING_STEPS = [

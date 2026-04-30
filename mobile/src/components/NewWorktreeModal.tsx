@@ -270,6 +270,7 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
 
   useEffect(() => {
     if (!visible || !client) return
+    let stale = false
     setName('')
     setNote('')
     setShowAdvanced(false)
@@ -286,6 +287,7 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
     void (async () => {
       try {
         const response = await client.sendRequest('repo.list')
+        if (stale) return
         if (response.ok) {
           const result = (response as RpcSuccess).result as { repos: Repo[] }
           setRepos(result.repos)
@@ -296,11 +298,14 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
           }
         }
       } catch {
-        setRepos([])
+        if (!stale) setRepos([])
       } finally {
-        setLoading(false)
+        if (!stale) setLoading(false)
       }
     })()
+    return () => {
+      stale = true
+    }
   }, [visible, client])
 
   useEffect(() => {
@@ -309,11 +314,13 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
       setSetupSource(null)
       return
     }
+    let stale = false
     void (async () => {
       try {
         const response = await client.sendRequest('repo.hooks', {
           repo: `id:${selectedRepo.id}`
         })
+        if (stale) return
         if (response.ok) {
           const result = (response as RpcSuccess).result as {
             hooks: { scripts: { setup?: string } } | null
@@ -326,10 +333,15 @@ export function NewWorktreeModal({ visible, client, onCreated, onClose }: Props)
           setRunSetup(result.setupRunPolicy !== 'skip-by-default')
         }
       } catch {
-        setSetupCommand(null)
-        setSetupSource(null)
+        if (!stale) {
+          setSetupCommand(null)
+          setSetupSource(null)
+        }
       }
     })()
+    return () => {
+      stale = true
+    }
   }, [client, selectedRepo])
 
   async function handleCreate() {

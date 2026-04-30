@@ -68,6 +68,8 @@ const ACCESSORY_KEYS: AccessoryKey[] = [
 // Why: persists fitted-handle sets across component remounts (e.g. navigating
 // away and back). React state resets on unmount, but we need to remember which
 // terminals were phone-fitted so we can auto-refit them on return.
+// Capped to avoid unbounded growth over long app sessions.
+const MAX_PERSISTED_WORKTREES = 50
 const persistedFittedHandles = new Map<string, Set<string>>()
 
 const STATUS_LABELS: Record<ConnectionState, string> = {
@@ -150,7 +152,12 @@ export default function SessionScreen() {
     (updater: (prev: Set<string>) => Set<string>) => {
       setFittedHandles((prev) => {
         const next = updater(prev)
+        persistedFittedHandles.delete(worktreeId!)
         persistedFittedHandles.set(worktreeId!, next)
+        if (persistedFittedHandles.size > MAX_PERSISTED_WORKTREES) {
+          const oldest = persistedFittedHandles.keys().next().value
+          if (oldest) persistedFittedHandles.delete(oldest)
+        }
         return next
       })
     },
@@ -336,19 +343,27 @@ export default function SessionScreen() {
   }, [client, activeHandle, getTerminalRef, resubscribeWithoutFocus, updateFittedHandles])
 
   useEffect(() => {
+    let disposed = false
     let rpcClient: RpcClient | null = null
 
     void (async () => {
       const hosts = await loadHosts()
       const host = hosts.find((h) => h.id === hostId)
-      if (!host) return
+      if (!host || disposed) return
 
       deviceTokenRef.current = host.deviceToken
       rpcClient = connect(host.endpoint, host.deviceToken, host.publicKeyB64, setConnState)
+      // Why: if the component unmounted while loadHosts was in-flight,
+      // close the just-created client immediately to prevent a leak.
+      if (disposed) {
+        rpcClient.close()
+        return
+      }
       setClient(rpcClient)
     })()
 
     return () => {
+      disposed = true
       clearTerminalCache()
       rpcClient?.close()
     }
@@ -357,6 +372,15 @@ export default function SessionScreen() {
   useEffect(() => {
     void loadCustomKeys().then(setCustomKeys)
   }, [])
+
+  useEffect(() => {
+    if (hostId && worktreeId) {
+      void AsyncStorage.setItem(
+        'orca:last-visited-worktree',
+        JSON.stringify({ hostId, worktreeId })
+      )
+    }
+  }, [hostId, worktreeId])
 
   const handleDeleteCustomKey = useCallback(
     async (key: CustomKey) => {
@@ -511,11 +535,12 @@ export default function SessionScreen() {
             }
           }
           const current = activeHandleRef.current
-          if (current && result.terminals.length === 0) {
-            return
-          }
+          // Why: during initial load, the server may briefly return empty while
+          // the worktree is still spinning up. Skip the update entirely so the
+          // UI doesn't flash empty. Once allowEmptyLoaded is true (after the
+          // grace period), trust the server's empty response so terminals
+          // closed on desktop are cleared from the mobile UI.
           if (result.terminals.length === 0 && !allowEmptyLoaded) {
-            setTerminals([])
             return
           }
 
@@ -542,43 +567,55 @@ export default function SessionScreen() {
   )
 
   useEffect(() => {
-    if (connState === 'connected') {
-      // Why: on reconnect the RPC client auto-resends terminal.subscribe,
-      // creating new server-side handlers. Clear local subscription state
-      // so subscribeToTerminal's guards don't block fresh subscriptions,
-      // and clear xterm buffers so the new scrollback snapshot replaces
-      // stale content (including data that arrived while disconnected).
-      clearTerminalCache()
-      setTerminalsLoaded(false)
-      void (async () => {
-        // Why: worktree.create already asks the desktop renderer to activate
-        // with startup/setup payloads. A second plain activation can race ahead
-        // and create a blank first terminal before those payloads are applied.
-        if (client && created !== '1') {
-          await client
-            .sendRequest('worktree.activate', {
-              worktree: `id:${worktreeId}`
-            })
-            .catch(() => null)
-        }
-        await fetchTerminals({ allowEmptyLoaded: false })
-        setTimeout(() => void fetchTerminals({ allowEmptyLoaded: false }), 750)
-        setTimeout(() => void fetchTerminals({ allowEmptyLoaded: true }), 1500)
-        if (client && created === '1') {
-          setTimeout(() => {
-            if (activeHandleRef.current) return
-            void (async () => {
-              await client
-                .sendRequest('worktree.activate', {
-                  worktree: `id:${worktreeId}`
-                })
-                .catch(() => null)
-              await fetchTerminals({ allowEmptyLoaded: true })
-              setTimeout(() => void fetchTerminals({ allowEmptyLoaded: true }), 750)
-            })()
-          }, 1800)
-        }
-      })()
+    if (connState !== 'connected') return
+    // Why: on reconnect the RPC client auto-resends terminal.subscribe,
+    // creating new server-side handlers. Clear local subscription state
+    // so subscribeToTerminal's guards don't block fresh subscriptions,
+    // and clear xterm buffers so the new scrollback snapshot replaces
+    // stale content (including data that arrived while disconnected).
+    clearTerminalCache()
+    setTerminalsLoaded(false)
+    let disposed = false
+    const timers: ReturnType<typeof setTimeout>[] = []
+    function addTimer(fn: () => void, ms: number) {
+      if (disposed) return
+      timers.push(setTimeout(fn, ms))
+    }
+    void (async () => {
+      // Why: worktree.create already asks the desktop renderer to activate
+      // with startup/setup payloads. A second plain activation can race ahead
+      // and create a blank first terminal before those payloads are applied.
+      if (client && created !== '1') {
+        await client
+          .sendRequest('worktree.activate', {
+            worktree: `id:${worktreeId}`
+          })
+          .catch(() => null)
+      }
+      if (disposed) return
+      await fetchTerminals({ allowEmptyLoaded: false })
+      if (disposed) return
+      addTimer(() => void fetchTerminals({ allowEmptyLoaded: false }), 750)
+      addTimer(() => void fetchTerminals({ allowEmptyLoaded: true }), 1500)
+      if (client && created === '1') {
+        addTimer(() => {
+          if (activeHandleRef.current) return
+          void (async () => {
+            await client
+              .sendRequest('worktree.activate', {
+                worktree: `id:${worktreeId}`
+              })
+              .catch(() => null)
+            if (disposed) return
+            await fetchTerminals({ allowEmptyLoaded: true })
+            addTimer(() => void fetchTerminals({ allowEmptyLoaded: true }), 750)
+          })()
+        }, 1800)
+      }
+    })()
+    return () => {
+      disposed = true
+      for (const t of timers) clearTimeout(t)
     }
   }, [client, connState, created, fetchTerminals, worktreeId])
 
@@ -763,217 +800,223 @@ export default function SessionScreen() {
       : STATUS_LABELS[connState]
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={0}
-    >
-      <SafeAreaView style={styles.sessionChrome} edges={['top']}>
-        <View style={styles.sessionTopBar}>
-          <Pressable
-            style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-            onPress={() => router.back()}
-            hitSlop={8}
-            accessibilityLabel="Back to worktrees"
-          >
-            <ChevronLeft size={22} color={colors.textSecondary} strokeWidth={2.2} />
-          </Pressable>
+    <View style={styles.container}>
+      <KeyboardAvoidingView
+        style={styles.kavInner}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={0}
+      >
+        <SafeAreaView style={styles.sessionChrome} edges={['top']}>
+          <View style={styles.sessionTopBar}>
+            <Pressable
+              style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
+              onPress={() => router.back()}
+              hitSlop={8}
+              accessibilityLabel="Back to worktrees"
+            >
+              <ChevronLeft size={22} color={colors.textSecondary} strokeWidth={2.2} />
+            </Pressable>
 
-          <View style={styles.sessionTitleBlock}>
-            <Text style={styles.sessionTitle} numberOfLines={1}>
-              {worktreeName || 'Terminal'}
-            </Text>
-            <View style={styles.sessionMetaRow}>
-              <StatusDot state={connState} />
-              <Text style={styles.sessionMetaText} numberOfLines={1}>
-                {terminalSummary}
+            <View style={styles.sessionTitleBlock}>
+              <Text style={styles.sessionTitle} numberOfLines={1}>
+                {worktreeName || 'Terminal'}
               </Text>
+              <View style={styles.sessionMetaRow}>
+                <StatusDot state={connState} />
+                <Text style={styles.sessionMetaText} numberOfLines={1}>
+                  {terminalSummary}
+                </Text>
+              </View>
             </View>
           </View>
-        </View>
 
-        {terminals.length > 0 && (
-          <View style={styles.tabBar}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.tabScroll}
-              contentContainerStyle={styles.tabContent}
-            >
-              {terminals.map((t) => (
-                <Pressable
-                  key={t.handle}
-                  style={[styles.tab, t.handle === activeHandle && styles.tabActive]}
-                  onPress={() => switchTab(t.handle)}
-                  onLongPress={() => {
-                    triggerMediumImpact()
-                    setActionTarget(t)
-                  }}
-                  delayLongPress={400}
-                >
-                  <Text
-                    style={[styles.tabText, t.handle === activeHandle && styles.tabTextActive]}
-                    numberOfLines={1}
-                  >
-                    {t.title || 'Terminal'}
-                  </Text>
-                </Pressable>
-              ))}
-              <Pressable
-                style={({ pressed }) => [
-                  styles.newTerminalButton,
-                  pressed && styles.newTerminalButtonPressed,
-                  (creating || connState !== 'connected') && styles.newTerminalButtonDisabled
-                ]}
-                disabled={creating || connState !== 'connected'}
-                onPress={() => void handleCreateTerminal()}
-                accessibilityLabel="New terminal"
+          {terminals.length > 0 && (
+            <View style={styles.tabBar}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.tabScroll}
+                contentContainerStyle={styles.tabContent}
               >
-                <Plus size={16} color={colors.textSecondary} strokeWidth={2.2} />
-              </Pressable>
-            </ScrollView>
+                {terminals.map((t) => (
+                  <Pressable
+                    key={t.handle}
+                    style={[styles.tab, t.handle === activeHandle && styles.tabActive]}
+                    onPress={() => switchTab(t.handle)}
+                    onLongPress={() => {
+                      triggerMediumImpact()
+                      setActionTarget(t)
+                    }}
+                    delayLongPress={400}
+                  >
+                    <Text
+                      style={[styles.tabText, t.handle === activeHandle && styles.tabTextActive]}
+                      numberOfLines={1}
+                    >
+                      {t.title || 'Terminal'}
+                    </Text>
+                  </Pressable>
+                ))}
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.newTerminalButton,
+                    pressed && styles.newTerminalButtonPressed,
+                    (creating || connState !== 'connected') && styles.newTerminalButtonDisabled
+                  ]}
+                  disabled={creating || connState !== 'connected'}
+                  onPress={() => void handleCreateTerminal()}
+                  accessibilityLabel="New terminal"
+                >
+                  <Plus size={16} color={colors.textSecondary} strokeWidth={2.2} />
+                </Pressable>
+              </ScrollView>
+            </View>
+          )}
+        </SafeAreaView>
+
+        {showLoadingState ? (
+          <View style={styles.emptyState}>
+            <ActivityIndicator size="small" color={colors.textSecondary} />
+          </View>
+        ) : showEmptyState ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyText}>No terminals in this session</Text>
+            {createError ? <Text style={styles.createError}>{createError}</Text> : null}
+            <Pressable
+              style={[styles.createButton, creating && styles.createButtonDisabled]}
+              disabled={creating}
+              onPress={() => void handleCreateTerminal()}
+            >
+              <Text style={styles.createButtonText}>
+                {creating ? 'Creating…' : 'Create Terminal'}
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.terminalFrame}>
+            {terminals.map((terminal) => (
+              <TerminalPaneView
+                key={terminal.handle}
+                handle={terminal.handle}
+                active={terminal.handle === activeHandle}
+                onRef={setTerminalWebViewRef}
+                onWebReady={handleTerminalWebReady}
+              />
+            ))}
           </View>
         )}
-      </SafeAreaView>
 
-      {showLoadingState ? (
-        <View style={styles.emptyState}>
-          <ActivityIndicator size="small" color={colors.textSecondary} />
-        </View>
-      ) : showEmptyState ? (
-        <View style={styles.emptyState}>
-          <Text style={styles.emptyText}>No terminals in this session</Text>
-          {createError ? <Text style={styles.createError}>{createError}</Text> : null}
-          <Pressable
-            style={[styles.createButton, creating && styles.createButtonDisabled]}
-            disabled={creating}
-            onPress={() => void handleCreateTerminal()}
+        {/* Accessory keys */}
+        <View style={styles.accessoryBar}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.accessoryContent}
           >
-            <Text style={styles.createButtonText}>
-              {creating ? 'Creating…' : 'Create Terminal'}
-            </Text>
-          </Pressable>
-        </View>
-      ) : (
-        <View style={styles.terminalFrame}>
-          {terminals.map((terminal) => (
-            <TerminalPaneView
-              key={terminal.handle}
-              handle={terminal.handle}
-              active={terminal.handle === activeHandle}
-              onRef={setTerminalWebViewRef}
-              onWebReady={handleTerminalWebReady}
-            />
-          ))}
-        </View>
-      )}
-
-      {/* Accessory keys */}
-      <View style={styles.accessoryBar}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.accessoryContent}
-        >
-          <Pressable
-            style={({ pressed }) => [
-              styles.accessoryKey,
-              pressed && styles.accessoryKeyPressed,
-              (!canSend || fitPending) && styles.accessoryKeyDisabled
-            ]}
-            disabled={!canSend || fitPending}
-            onPress={() => {
-              if (activeHandle && fittedHandles.has(activeHandle)) {
-                void handleRestoreDesktopSize()
-              } else {
-                void handleFitToPhone()
-              }
-            }}
-            accessibilityLabel={
-              activeHandle && fittedHandles.has(activeHandle)
-                ? 'Restore desktop size'
-                : 'Fit to phone'
-            }
-          >
-            {activeHandle && fittedHandles.has(activeHandle) ? (
-              <Monitor size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
-            ) : (
-              <Smartphone size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
-            )}
-          </Pressable>
-          {ACCESSORY_KEYS.map((key) => (
             <Pressable
-              key={key.label}
               style={({ pressed }) => [
                 styles.accessoryKey,
                 pressed && styles.accessoryKeyPressed,
-                !canSend && styles.accessoryKeyDisabled
+                (!canSend || fitPending) && styles.accessoryKeyDisabled
               ]}
-              disabled={!canSend}
-              onPress={() => void handleAccessoryKey(key.bytes)}
-              accessibilityLabel={key.accessibilityLabel ?? `Send ${key.label}`}
-            >
-              <Text style={[styles.accessoryKeyText, !canSend && styles.accessoryKeyTextDisabled]}>
-                {key.label}
-              </Text>
-            </Pressable>
-          ))}
-          {customKeys.map((key) => (
-            <Pressable
-              key={key.id}
-              style={({ pressed }) => [
-                styles.accessoryKey,
-                styles.customAccessoryKey,
-                pressed && styles.accessoryKeyPressed,
-                !canSend && styles.accessoryKeyDisabled
-              ]}
-              disabled={!canSend}
-              onPress={() => void handleAccessoryKey(key.bytes)}
-              onLongPress={() => {
-                triggerMediumImpact()
-                setDeleteKeyTarget(key)
+              disabled={!canSend || fitPending}
+              onPress={() => {
+                if (activeHandle && fittedHandles.has(activeHandle)) {
+                  void handleRestoreDesktopSize()
+                } else {
+                  void handleFitToPhone()
+                }
               }}
-              delayLongPress={400}
-              accessibilityLabel={`Send ${key.label}`}
+              accessibilityLabel={
+                activeHandle && fittedHandles.has(activeHandle)
+                  ? 'Restore desktop size'
+                  : 'Fit to phone'
+              }
             >
-              <Text style={[styles.accessoryKeyText, !canSend && styles.accessoryKeyTextDisabled]}>
-                {key.label}
-              </Text>
+              {activeHandle && fittedHandles.has(activeHandle) ? (
+                <Monitor size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
+              ) : (
+                <Smartphone size={14} color={canSend ? colors.textSecondary : colors.textMuted} />
+              )}
             </Pressable>
-          ))}
-          <Pressable
-            style={({ pressed }) => [styles.accessoryKey, pressed && styles.accessoryKeyPressed]}
-            onPress={() => setShowCustomKeyModal(true)}
-            accessibilityLabel="Add custom shortcut"
-          >
-            <Plus size={14} color={colors.textSecondary} strokeWidth={2.2} />
-          </Pressable>
-        </ScrollView>
-      </View>
+            {ACCESSORY_KEYS.map((key) => (
+              <Pressable
+                key={key.label}
+                style={({ pressed }) => [
+                  styles.accessoryKey,
+                  pressed && styles.accessoryKeyPressed,
+                  !canSend && styles.accessoryKeyDisabled
+                ]}
+                disabled={!canSend}
+                onPress={() => void handleAccessoryKey(key.bytes)}
+                accessibilityLabel={key.accessibilityLabel ?? `Send ${key.label}`}
+              >
+                <Text
+                  style={[styles.accessoryKeyText, !canSend && styles.accessoryKeyTextDisabled]}
+                >
+                  {key.label}
+                </Text>
+              </Pressable>
+            ))}
+            {customKeys.map((key) => (
+              <Pressable
+                key={key.id}
+                style={({ pressed }) => [
+                  styles.accessoryKey,
+                  styles.customAccessoryKey,
+                  pressed && styles.accessoryKeyPressed,
+                  !canSend && styles.accessoryKeyDisabled
+                ]}
+                disabled={!canSend}
+                onPress={() => void handleAccessoryKey(key.bytes)}
+                onLongPress={() => {
+                  triggerMediumImpact()
+                  setDeleteKeyTarget(key)
+                }}
+                delayLongPress={400}
+                accessibilityLabel={`Send ${key.label}`}
+              >
+                <Text
+                  style={[styles.accessoryKeyText, !canSend && styles.accessoryKeyTextDisabled]}
+                >
+                  {key.label}
+                </Text>
+              </Pressable>
+            ))}
+            <Pressable
+              style={({ pressed }) => [styles.accessoryKey, pressed && styles.accessoryKeyPressed]}
+              onPress={() => setShowCustomKeyModal(true)}
+              accessibilityLabel="Add custom shortcut"
+            >
+              <Plus size={14} color={colors.textSecondary} strokeWidth={2.2} />
+            </Pressable>
+          </ScrollView>
+        </View>
 
-      {/* Input bar */}
-      <View style={styles.inputBar}>
-        <TextInput
-          style={styles.textInput}
-          value={input}
-          onChangeText={setInput}
-          placeholder="Type a command…"
-          placeholderTextColor={colors.textMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="send"
-          editable={canSend}
-          onSubmitEditing={() => void handleSend()}
-        />
-        <Pressable
-          style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
-          disabled={!canSend}
-          onPress={() => void handleSend()}
-          accessibilityLabel="Send command"
-        >
-          <ArrowUp size={18} color={colors.textSecondary} strokeWidth={2.5} />
-        </Pressable>
-      </View>
+        {/* Input bar */}
+        <View style={styles.inputBar}>
+          <TextInput
+            style={styles.textInput}
+            value={input}
+            onChangeText={setInput}
+            placeholder="Type a command…"
+            placeholderTextColor={colors.textMuted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="send"
+            editable={canSend}
+            onSubmitEditing={() => void handleSend()}
+          />
+          <Pressable
+            style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
+            disabled={!canSend}
+            onPress={() => void handleSend()}
+            accessibilityLabel="Send command"
+          >
+            <ArrowUp size={18} color={colors.textSecondary} strokeWidth={2.5} />
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
 
       <ActionSheetModal
         visible={actionTarget != null}
@@ -1055,7 +1098,7 @@ export default function SessionScreen() {
         ]}
         onClose={() => setDeleteKeyTarget(null)}
       />
-    </KeyboardAvoidingView>
+    </View>
   )
 }
 
@@ -1063,6 +1106,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bgBase
+  },
+  kavInner: {
+    flex: 1
   },
   sessionChrome: {
     backgroundColor: colors.bgPanel,
