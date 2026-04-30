@@ -9,7 +9,10 @@ import {
   Settings,
   Bot,
   Clock,
-  GitPullRequest
+  GitPullRequest,
+  ChevronRight,
+  Terminal,
+  Plus
 } from 'lucide-react-native'
 import { loadHosts, removeHost, renameHost } from '../src/transport/host-store'
 import { connect, type RpcClient } from '../src/transport/rpc-client'
@@ -48,6 +51,22 @@ type StatsSummary = {
   firstEventAt: number | null
 }
 
+type WorktreeSummary = {
+  worktreeId: string
+  repo: string
+  branch: string
+  displayName: string
+  liveTerminalCount: number
+  status?: 'working' | 'active' | 'permission' | 'done' | 'inactive'
+}
+
+type HostWorktreeInfo = {
+  hostId: string
+  totalWorktrees: number
+  activeCount: number
+  lastActiveWorktree: WorktreeSummary | null
+}
+
 function formatDuration(ms: number): string {
   const totalMinutes = Math.floor(ms / 60_000)
   const totalHours = Math.floor(totalMinutes / 60)
@@ -70,6 +89,46 @@ function fetchStats(client: RpcClient, setStats: (s: StatsSummary) => void) {
     .catch(() => {})
 }
 
+function fetchWorktreeInfo(
+  client: RpcClient,
+  hostId: string,
+  setInfo: (
+    updater: (prev: Record<string, HostWorktreeInfo>) => Record<string, HostWorktreeInfo>
+  ) => void
+) {
+  client
+    .sendRequest('worktree.ps')
+    .then((response) => {
+      if (response.ok) {
+        const worktrees = response.result as WorktreeSummary[]
+        const activeStatuses = new Set(['working', 'active', 'permission'])
+        const active = worktrees.filter((w) => w.status && activeStatuses.has(w.status))
+        const lastActive = active.length > 0 ? active[0] : (worktrees[0] ?? null)
+        setInfo((prev) => ({
+          ...prev,
+          [hostId]: {
+            hostId,
+            totalWorktrees: worktrees.length,
+            activeCount: active.length,
+            lastActiveWorktree: lastActive
+          }
+        }))
+      }
+    })
+    .catch(() => {})
+}
+
+// Why: repo names get a stable color derived from hashing, matching the
+// host detail page's colored dots for visual consistency.
+const REPO_COLORS = ['#8b5cf6', '#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#ec4899', '#06b6d4']
+function repoColor(name: string): string {
+  let hash = 0
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) | 0
+  }
+  return REPO_COLORS[Math.abs(hash) % REPO_COLORS.length]
+}
+
 export default function HomeScreen() {
   const router = useRouter()
   const [hosts, setHosts] = useState<HostProfile[]>([])
@@ -78,12 +137,12 @@ export default function HomeScreen() {
   const [confirmRemove, setConfirmRemove] = useState<HostProfile | null>(null)
   const [hostStates, setHostStates] = useState<Record<string, ConnectionState>>({})
   const [stats, setStats] = useState<StatsSummary | null>(null)
+  const [worktreeInfo, setWorktreeInfo] = useState<Record<string, HostWorktreeInfo>>({})
   const clientsRef = useRef<RpcClient[]>([])
 
   useFocusEffect(
     useCallback(() => {
       void loadHosts().then(setHosts)
-      // Refetch stats from any connected client when the screen regains focus
       for (const client of clientsRef.current) {
         if (client.getState() === 'connected') {
           fetchStats(client, setStats)
@@ -131,6 +190,7 @@ export default function HomeScreen() {
           if (!statsFetched) {
             statsFetched = true
             fetchStats(client, setStats)
+            fetchWorktreeInfo(client, host.id, setWorktreeInfo)
           }
         } else if (unsubNotif) {
           unsubNotif()
@@ -155,6 +215,19 @@ export default function HomeScreen() {
     }
   }, [hosts])
 
+  // Why: find the most recent active worktree across all connected hosts
+  // to power the "Resume" card on the home screen.
+  const resumeWorktree = useMemo(() => {
+    for (const host of sortedHosts) {
+      if (hostStates[host.id] !== 'connected') continue
+      const info = worktreeInfo[host.id]
+      if (info?.lastActiveWorktree) {
+        return { hostId: host.id, worktree: info.lastActiveWorktree }
+      }
+    }
+    return null
+  }, [sortedHosts, hostStates, worktreeInfo])
+
   async function handleRename(newName: string) {
     if (!renameTarget) return
     await renameHost(renameTarget.id, newName)
@@ -171,6 +244,7 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* ─── Top bar ─── */}
       <View style={styles.topBar}>
         <View style={styles.brandLockup}>
           <View style={styles.logoMark}>
@@ -178,21 +252,53 @@ export default function HomeScreen() {
           </View>
           <Text style={styles.brandName}>Orca</Text>
         </View>
+        <Pressable
+          style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
+          onPress={() => router.push('/settings')}
+        >
+          <Settings size={18} color={colors.textSecondary} />
+        </Pressable>
       </View>
 
       {hosts.length === 0 ? (
-        <View style={styles.emptyContent}>
-          <Text style={styles.emptyTitle}>Pair your first desktop</Text>
-          <Text style={styles.emptySubtitle}>
-            Scan the QR code from Orca desktop to see live worktrees, terminals, and agent output
-            from your phone.
-          </Text>
-          <Pressable style={styles.primaryButton} onPress={() => router.push('/pair-scan')}>
-            <QrCode size={17} color={colors.bgBase} />
-            <Text style={styles.primaryButtonText}>Scan Pairing Code</Text>
-          </Pressable>
+        /* ─── Empty state: onboarding ─── */
+        <View style={styles.emptyContainer}>
+          <View style={styles.emptyGreeting}>
+            <Text style={styles.heroTitle}>Welcome to Orca</Text>
+          </View>
+
+          <View style={styles.emptyHero}>
+            <View style={styles.emptyGlyph}>
+              <Monitor size={36} color={colors.textSecondary} strokeWidth={1.5} />
+            </View>
+            <Text style={styles.emptyTitle}>Connect your desktop</Text>
+            <Text style={styles.emptyBody}>
+              Pair with Orca on your computer to monitor worktrees, watch agents work, and manage
+              terminals — all from your phone.
+            </Text>
+            <Pressable style={styles.primaryButton} onPress={() => router.push('/pair-scan')}>
+              <QrCode size={17} color={colors.bgBase} />
+              <Text style={styles.primaryButtonText}>Scan Pairing Code</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.stepsSection}>
+            <Text style={styles.sectionHeading}>How it works</Text>
+            {ONBOARDING_STEPS.map((step, i) => (
+              <View key={step.title} style={[styles.stepRow, i > 0 && styles.stepRowBorder]}>
+                <View style={styles.stepNum}>
+                  <Text style={styles.stepNumText}>{i + 1}</Text>
+                </View>
+                <View style={styles.stepText}>
+                  <Text style={styles.stepTitle}>{step.title}</Text>
+                  <Text style={styles.stepDesc}>{step.desc}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
         </View>
       ) : (
+        /* ─── Populated state ─── */
         <FlatList
           data={sortedHosts}
           keyExtractor={(h) => h.id}
@@ -206,19 +312,25 @@ export default function HomeScreen() {
               {stats && (
                 <View style={styles.statsRow}>
                   <View style={styles.statCard}>
-                    <Bot size={14} color={colors.textMuted} />
+                    <View style={styles.statIcon}>
+                      <Bot size={14} color={colors.textMuted} />
+                    </View>
                     <Text style={styles.statValue}>
                       {stats.totalAgentsSpawned.toLocaleString()}
                     </Text>
                     <Text style={styles.statLabel}>Agents</Text>
                   </View>
                   <View style={styles.statCard}>
-                    <Clock size={14} color={colors.textMuted} />
+                    <View style={styles.statIcon}>
+                      <Clock size={14} color={colors.textMuted} />
+                    </View>
                     <Text style={styles.statValue}>{formatDuration(stats.totalAgentTimeMs)}</Text>
                     <Text style={styles.statLabel}>Agent time</Text>
                   </View>
                   <View style={styles.statCard}>
-                    <GitPullRequest size={14} color={colors.textMuted} />
+                    <View style={styles.statIcon}>
+                      <GitPullRequest size={14} color={colors.textMuted} />
+                    </View>
                     <Text style={styles.statValue}>{stats.totalPRsCreated.toLocaleString()}</Text>
                     <Text style={styles.statLabel}>PRs</Text>
                   </View>
@@ -229,54 +341,136 @@ export default function HomeScreen() {
             </View>
           }
           ItemSeparatorComponent={() => <View style={styles.cardGap} />}
-          renderItem={({ item }) => (
-            <Pressable
-              style={({ pressed }) => [styles.hostCard, pressed && styles.hostCardPressed]}
-              disabled={hostStates[item.id] === 'auth-failed'}
-              onPress={() => router.push(`/h/${item.id}`)}
-              onLongPress={() => {
-                triggerMediumImpact()
-                setActionTarget(item)
-              }}
-              delayLongPress={400}
-            >
-              <View style={styles.hostIcon}>
-                <Monitor size={18} color={colors.textPrimary} />
-              </View>
-              <View style={styles.hostMain}>
-                <View style={styles.hostTitleRow}>
-                  <StatusDot state={hostStates[item.id] ?? 'connecting'} />
-                  <Text style={styles.hostName} numberOfLines={1}>
+          renderItem={({ item }) => {
+            const state = hostStates[item.id] ?? 'connecting'
+            const connected = state === 'connected'
+            const info = worktreeInfo[item.id]
+            return (
+              <Pressable
+                style={({ pressed }) => [styles.hostCard, pressed && styles.hostCardPressed]}
+                onPress={() => router.push(`/h/${item.id}`)}
+                onLongPress={() => {
+                  triggerMediumImpact()
+                  setActionTarget(item)
+                }}
+                delayLongPress={400}
+              >
+                <View style={styles.hostIcon}>
+                  <Monitor
+                    size={20}
+                    color={connected ? colors.textPrimary : colors.textSecondary}
+                  />
+                  <View
+                    style={[
+                      styles.hostStatusRing,
+                      { backgroundColor: connected ? colors.statusGreen : colors.textMuted }
+                    ]}
+                  />
+                </View>
+                <View style={styles.hostMain}>
+                  <Text
+                    style={[styles.hostName, !connected && { color: colors.textSecondary }]}
+                    numberOfLines={1}
+                  >
                     {item.name}
                   </Text>
+                  <View style={styles.hostMeta}>
+                    {connected && info ? (
+                      <>
+                        <Text style={styles.hostMetaItem}>
+                          {info.totalWorktrees} worktree{info.totalWorktrees !== 1 ? 's' : ''}
+                        </Text>
+                        {info.activeCount > 0 && (
+                          <>
+                            <View style={styles.hostMetaDot} />
+                            <Text style={[styles.hostMetaItem, { color: colors.statusGreen }]}>
+                              {info.activeCount} active
+                            </Text>
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <Text style={styles.hostMetaItem}>{STATUS_LABELS[state]}</Text>
+                    )}
+                  </View>
                 </View>
-                <Text style={styles.hostStatus} numberOfLines={1}>
-                  {STATUS_LABELS[hostStates[item.id] ?? 'connecting']}
-                </Text>
-              </View>
-              <Pressable
-                style={({ pressed }) => [styles.moreButton, pressed && styles.iconButtonPressed]}
-                onPress={() => setActionTarget(item)}
-                accessibilityLabel={`Manage ${item.name}`}
-              >
-                <MoreHorizontal size={18} color={colors.textSecondary} />
+                <ChevronRight size={16} color={colors.textMuted} />
               </Pressable>
-            </Pressable>
-          )}
+            )
+          }}
           ListFooterComponent={
-            <Pressable style={styles.pairCard} onPress={() => router.push('/pair-scan')}>
-              <View style={styles.pairIcon}>
-                <QrCode size={18} color={colors.textSecondary} />
+            <View>
+              {/* ─── Resume card ─── */}
+              {resumeWorktree && (
+                <>
+                  <Text style={[styles.sectionHeading, { marginTop: spacing.xl }]}>Resume</Text>
+                  <Pressable
+                    style={({ pressed }) => [styles.resumeCard, pressed && styles.hostCardPressed]}
+                    onPress={() =>
+                      router.push(
+                        `/h/${resumeWorktree.hostId}/terminal/${resumeWorktree.worktree.worktreeId}`
+                      )
+                    }
+                  >
+                    <View style={styles.resumeIcon}>
+                      <Terminal size={18} color={colors.textSecondary} />
+                    </View>
+                    <View style={styles.resumeMain}>
+                      <Text style={styles.resumeTitle} numberOfLines={1}>
+                        {resumeWorktree.worktree.displayName}
+                      </Text>
+                      <View style={styles.resumeSub}>
+                        <View
+                          style={[
+                            styles.repoDot,
+                            { backgroundColor: repoColor(resumeWorktree.worktree.repo) }
+                          ]}
+                        />
+                        <Text style={styles.resumeSubText} numberOfLines={1}>
+                          {resumeWorktree.worktree.repo}
+                          {'  ·  '}
+                          {resumeWorktree.worktree.branch}
+                        </Text>
+                      </View>
+                    </View>
+                    <ChevronRight size={16} color={colors.textMuted} />
+                  </Pressable>
+                </>
+              )}
+
+              {/* ─── Quick actions ─── */}
+              <Text style={[styles.sectionHeading, { marginTop: spacing.xl }]}>Quick Actions</Text>
+              <View style={styles.quickActions}>
+                <Pressable
+                  style={({ pressed }) => [styles.quickAction, pressed && styles.hostCardPressed]}
+                  onPress={() => router.push('/pair-scan')}
+                >
+                  <View style={styles.quickActionIcon}>
+                    <QrCode size={20} color={colors.textSecondary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>Pair Desktop</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.quickAction, pressed && styles.hostCardPressed]}
+                  onPress={() => {
+                    const connectedHost = sortedHosts.find((h) => hostStates[h.id] === 'connected')
+                    if (connectedHost) {
+                      router.push(`/h/${connectedHost.id}?action=newWorktree`)
+                    }
+                  }}
+                >
+                  <View style={styles.quickActionIcon}>
+                    <Plus size={20} color={colors.textSecondary} />
+                  </View>
+                  <Text style={styles.quickActionLabel}>New Worktree</Text>
+                </Pressable>
               </View>
-              <View style={styles.pairTextBlock}>
-                <Text style={styles.pairTitle}>Pair another desktop</Text>
-                <Text style={styles.pairSubtitle}>Scan a QR code from Orca desktop</Text>
-              </View>
-            </Pressable>
+            </View>
           }
         />
       )}
 
+      {/* ─── Action sheets (shared by both states) ─── */}
       <ActionSheetModal
         visible={actionTarget != null}
         title={actionTarget?.name}
@@ -322,23 +516,36 @@ export default function HomeScreen() {
         onConfirm={() => void handleRemove()}
         onCancel={() => setConfirmRemove(null)}
       />
-
-      <Pressable style={styles.settingsButton} onPress={() => router.push('/settings')}>
-        <Settings size={16} color={colors.textMuted} />
-        <Text style={styles.settingsText}>Settings</Text>
-      </Pressable>
     </SafeAreaView>
   )
 }
+
+const ONBOARDING_STEPS = [
+  {
+    title: 'Open Orca desktop',
+    desc: 'Go to Settings → Mobile and generate a pairing QR code.'
+  },
+  {
+    title: 'Scan the code',
+    desc: 'Tap the button above to open the scanner. Point at the QR code on your screen.'
+  },
+  {
+    title: "You're connected",
+    desc: 'Your desktop will appear here. Everything is encrypted end-to-end.'
+  }
+]
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bgBase
   },
+
+  /* ─── Top bar ─── */
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
     paddingBottom: spacing.md
@@ -356,187 +563,321 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700'
   },
+  iconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
   iconButtonPressed: {
     backgroundColor: colors.bgRaised
   },
-  emptyContent: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xl,
-    paddingBottom: spacing.xl
-  },
-  emptyTitle: {
-    fontSize: 23,
-    fontWeight: '700',
-    color: colors.textPrimary,
-    textAlign: 'center'
-  },
-  emptySubtitle: {
-    fontSize: typography.bodySize,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-    marginTop: spacing.sm,
-    marginBottom: spacing.xl
-  },
-  primaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: colors.textPrimary,
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.md,
-    borderRadius: radii.button
-  },
-  primaryButtonText: {
-    color: colors.bgBase,
-    fontSize: typography.bodySize,
-    fontWeight: '700'
-  },
-  list: {
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xl
-  },
+
+  /* ─── Hero / greeting ─── */
   hero: {
     paddingTop: spacing.md,
     paddingBottom: spacing.lg
   },
   heroTitle: {
     color: colors.textPrimary,
-    fontSize: 24,
-    fontWeight: '800'
+    fontSize: 26,
+    fontWeight: '800',
+    letterSpacing: -0.3
   },
+
+  /* ─── Stat cards ─── */
   statsRow: {
     flexDirection: 'row',
-    gap: spacing.sm,
+    gap: 10,
     marginBottom: spacing.xl
   },
   statCard: {
     flex: 1,
-    backgroundColor: colors.bgPanel,
+    backgroundColor: 'rgba(26,26,26,0.6)',
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
     borderRadius: 10,
-    padding: spacing.md,
-    gap: spacing.xs
+    padding: spacing.md
+  },
+  statIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 7,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10
   },
   statValue: {
     color: colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '700'
+    fontSize: 20,
+    fontWeight: '700',
+    letterSpacing: -0.3
   },
   statLabel: {
     color: colors.textMuted,
-    fontSize: typography.metaSize
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 3
   },
+
+  /* ─── Section heading ─── */
   sectionHeading: {
-    fontSize: typography.metaSize,
+    fontSize: 11,
     fontWeight: '600',
     color: colors.textMuted,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.6,
     marginBottom: spacing.sm,
     paddingHorizontal: spacing.xs
+  },
+
+  /* ─── List ─── */
+  list: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xl
   },
   cardGap: {
     height: spacing.sm
   },
+
+  /* ─── Host cards ─── */
   hostCard: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingLeft: spacing.md,
     paddingRight: spacing.md,
-    paddingVertical: spacing.sm,
-    minHeight: 70,
-    borderRadius: radii.row,
-    backgroundColor: colors.bgPanel
+    paddingVertical: 14,
+    borderRadius: radii.card,
+    backgroundColor: colors.bgPanel,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle
   },
   hostCardPressed: {
     backgroundColor: colors.bgRaised
   },
   hostIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 11,
+    width: 46,
+    height: 46,
+    borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.bgRaised,
-    marginRight: spacing.md
+    marginRight: 14,
+    position: 'relative'
+  },
+  hostStatusRing: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: colors.bgPanel
   },
   hostMain: {
     flex: 1,
     minWidth: 0,
     marginRight: spacing.sm
   },
-  hostTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minWidth: 0
-  },
   hostName: {
-    flex: 1,
     color: colors.textPrimary,
-    fontSize: 16,
-    fontWeight: '700'
+    fontSize: 15,
+    fontWeight: '600',
+    lineHeight: 20
   },
-  moreButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: spacing.xs
-  },
-  hostStatus: {
-    color: colors.textMuted,
-    fontSize: 13,
-    marginTop: spacing.xs
-  },
-  pairCard: {
+  hostMeta: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 70,
-    marginTop: spacing.md,
-    paddingLeft: spacing.md,
-    paddingRight: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.row,
-    backgroundColor: colors.bgPanel
+    marginTop: 3
   },
-  pairIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 11,
+  hostMetaItem: {
+    fontSize: 12,
+    color: colors.textSecondary
+  },
+  hostMetaDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: colors.textMuted,
+    marginHorizontal: 8
+  },
+
+  /* ─── Resume card ─── */
+  resumeCard: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.bgRaised,
-    marginRight: spacing.md
+    backgroundColor: colors.bgPanel,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radii.card,
+    padding: 14,
+    gap: 12
   },
-  pairTextBlock: {
+  resumeIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  resumeMain: {
     flex: 1,
     minWidth: 0
   },
-  pairTitle: {
-    color: colors.textPrimary,
-    fontSize: typography.bodySize,
-    fontWeight: '700'
+  resumeTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textPrimary
   },
-  pairSubtitle: {
-    color: colors.textMuted,
-    fontSize: typography.metaSize,
+  resumeSub: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     marginTop: 2
   },
-  settingsButton: {
-    flexDirection: 'row',
-    alignSelf: 'center',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.xl
+  repoDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3
   },
-  settingsText: {
-    fontSize: 13,
+  resumeSubText: {
+    fontSize: 11,
     color: colors.textMuted,
-    fontWeight: '500'
+    flex: 1
+  },
+
+  /* ─── Quick actions ─── */
+  quickActions: {
+    flexDirection: 'row',
+    gap: spacing.sm
+  },
+  quickAction: {
+    flex: 1,
+    backgroundColor: colors.bgPanel,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radii.card,
+    padding: spacing.lg,
+    alignItems: 'center',
+    gap: 10
+  },
+  quickActionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  quickActionLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    textAlign: 'center'
+  },
+
+  /* ─── Empty state ─── */
+  emptyContainer: {
+    flex: 1
+  },
+  emptyGreeting: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm
+  },
+  emptyHero: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    paddingBottom: 40
+  },
+  emptyGlyph: {
+    width: 80,
+    height: 80,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 28
+  },
+  emptyTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    textAlign: 'center',
+    marginBottom: 10
+  },
+  emptyBody: {
+    fontSize: 15,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 32
+  },
+  primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: colors.textPrimary,
+    paddingHorizontal: 28,
+    paddingVertical: 14,
+    borderRadius: radii.card
+  },
+  primaryButtonText: {
+    color: colors.bgBase,
+    fontSize: 15,
+    fontWeight: '700'
+  },
+
+  /* ─── Onboarding steps ─── */
+  stepsSection: {
+    paddingHorizontal: spacing.xl
+  },
+  stepRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 14,
+    paddingVertical: spacing.lg
+  },
+  stepRowBorder: {
+    borderTopWidth: 1,
+    borderTopColor: colors.borderSubtle
+  },
+  stepNum: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1
+  },
+  stepNumText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.textSecondary
+  },
+  stepText: {
+    flex: 1
+  },
+  stepTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    marginBottom: 3
+  },
+  stepDesc: {
+    fontSize: 12,
+    color: colors.textMuted,
+    lineHeight: 17
   }
 })

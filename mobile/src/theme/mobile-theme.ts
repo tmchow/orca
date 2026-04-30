@@ -31,6 +31,7 @@ export const spacing = {
 
 export const radii = {
   row: 6,
+  card: 14,
   button: 6,
   input: 6,
   camera: 8
