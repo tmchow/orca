@@ -8,10 +8,7 @@ export type TerminalWebViewHandle = {
   write: (data: string) => void
   init: (cols: number, rows: number, initialData?: string) => void
   clear: () => void
-  measureFitDimensions: (viewport?: { width: number; height: number }) => Promise<{
-    cols: number
-    rows: number
-  } | null>
+  measureFitDimensions: () => Promise<{ cols: number; rows: number } | null>
   resetZoom: () => void
 }
 
@@ -24,7 +21,7 @@ type TerminalMessage =
   | { type: 'write'; id?: number; data: string }
   | { type: 'init'; id?: number; cols: number; rows: number; initialData?: string }
   | { type: 'clear'; id?: number }
-  | { type: 'measure'; id?: number; viewportWidth?: number; viewportHeight?: number }
+  | { type: 'measure'; id?: number }
   | { type: 'reset-zoom'; id?: number }
 
 // Why: TUI apps (Claude Code / Ink) emit escape codes with absolute cursor
@@ -142,6 +139,11 @@ const XTERM_HTML = `<!DOCTYPE html>
   // managed by xterm, not a separate HTML gap. Never shrink below the
   // original init row count to avoid clipping active terminal content.
   function adjustRowsForViewport() {
+    // Why: mobile replays a live PTY snapshot and then applies live cursor-
+    // relative chunks from that same PTY. Resizing only the WebView xterm
+    // changes cursor coordinates and makes TUI repaint chunks duplicate or
+    // overlap existing frames. Keep xterm rows identical to the PTY.
+    return;
     if (!term || !term.element) return;
     // Why: active alternate-screen TUIs (Claude Code, vim, etc.) are exact
     // screen snapshots. Locally resizing the mobile xterm after replay can
@@ -175,14 +177,6 @@ const XTERM_HTML = `<!DOCTYPE html>
     var on = data.lastIndexOf(ESC + '[?1049h');
     var off = data.lastIndexOf(ESC + '[?1049l');
     return on !== -1 && on > off;
-  }
-
-  function getAltScreenTransition(data) {
-    if (typeof data !== 'string') return null;
-    var on = data.lastIndexOf(ESC + '[?1049h');
-    var off = data.lastIndexOf(ESC + '[?1049l');
-    if (on === -1 && off === -1) return null;
-    return on > off;
   }
 
   function normalizeInitialData(data) {
@@ -283,18 +277,7 @@ const XTERM_HTML = `<!DOCTYPE html>
   }
 
   function write(data) {
-    var nextAltScreen = getAltScreenTransition(data);
-    if (nextAltScreen === true && !activeAltScreenSnapshot) {
-      activeAltScreenSnapshot = true;
-      // Why: alternate-screen chunks are generated for the PTY row count.
-      // Undo display-only row growth before xterm parses TUI coordinates.
-      if (term && term.rows !== initRows) term.resize(term.cols, initRows);
-    }
     writeQueue.push(data);
-    if (nextAltScreen === false && activeAltScreenSnapshot) {
-      activeAltScreenSnapshot = false;
-      afterWritesDrained(adjustRowsForViewport);
-    }
     pumpWrites(terminalGeneration);
   }
 
@@ -304,7 +287,7 @@ const XTERM_HTML = `<!DOCTYPE html>
     }
   }
 
-  function measureFitDimensions(request) {
+  function measureFitDimensions() {
     if (!term || !term.element) {
       notify({ type: 'measure-result', cols: null, rows: null });
       return;
@@ -323,17 +306,10 @@ const XTERM_HTML = `<!DOCTYPE html>
       notify({ type: 'measure-result', cols: null, rows: null });
       return;
     }
-    var vpWidth = request && typeof request.viewportWidth === 'number'
-      ? request.viewportWidth
-      : window.innerWidth;
-    var vpHeight = request && typeof request.viewportHeight === 'number'
-      ? request.viewportHeight
-      : window.innerHeight;
+    var vpWidth = window.innerWidth;
+    var vpHeight = window.innerHeight;
     var cols = Math.floor(vpWidth / cellWidth);
-    // Why: Android WebView can report a viewport that is a little taller than
-    // the visibly unobscured terminal area next to the native input chrome.
-    // Reserve one row so max scroll leaves the final line fully visible.
-    var rows = Math.max(8, Math.floor(vpHeight / cellHeight) - 1);
+    var rows = Math.floor(vpHeight / cellHeight);
     notify({ type: 'measure-result', cols: cols, rows: rows });
   }
 
@@ -354,7 +330,7 @@ const XTERM_HTML = `<!DOCTYPE html>
       writesDraining = false;
       if (term) { term.clear(); term.reset(); }
     } else if (msg.type === 'measure') {
-      measureFitDimensions(msg);
+      measureFitDimensions();
     } else if (msg.type === 'reset-zoom') {
       applyFitScale();
     }
@@ -596,19 +572,12 @@ export const TerminalWebView = forwardRef<TerminalWebViewHandle, Props>(function
       clear() {
         postMessage({ type: 'clear' })
       },
-      measureFitDimensions(viewport?: {
-        width: number
-        height: number
-      }): Promise<{ cols: number; rows: number } | null> {
+      measureFitDimensions(): Promise<{ cols: number; rows: number } | null> {
         if (!isWebReadyRef.current) return Promise.resolve(null)
         return new Promise((resolve) => {
           measureResolveRef.current?.(null)
           measureResolveRef.current = resolve
-          sendToWebView({
-            type: 'measure',
-            viewportWidth: viewport?.width,
-            viewportHeight: viewport?.height
-          })
+          sendToWebView({ type: 'measure' })
           // Why: if the WebView doesn't respond within 2s (e.g., xterm
           // failed to load), resolve null so the caller can disable
           // Fit to Phone rather than hanging indefinitely.
