@@ -309,7 +309,10 @@ const XTERM_HTML = `<!DOCTYPE html>
     var vpWidth = window.innerWidth;
     var vpHeight = window.innerHeight;
     var cols = Math.floor(vpWidth / cellWidth);
-    var rows = Math.floor(vpHeight / cellHeight);
+    // Why: Android WebView can report a viewport that is a little taller than
+    // the visibly unobscured terminal area next to the native input chrome.
+    // Reserve one row so max scroll leaves the final line fully visible.
+    var rows = Math.max(8, Math.floor(vpHeight / cellHeight) - 1);
     notify({ type: 'measure-result', cols: cols, rows: rows });
   }
 
