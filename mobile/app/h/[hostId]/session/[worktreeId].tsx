@@ -71,6 +71,7 @@ const ACCESSORY_KEYS: AccessoryKey[] = [
 // Capped to avoid unbounded growth over long app sessions.
 const MAX_PERSISTED_WORKTREES = 50
 const persistedFittedHandles = new Map<string, Set<string>>()
+const FIT_LAYOUT_SETTLE_MS = 250
 
 const STATUS_LABELS: Record<ConnectionState, string> = {
   connecting: 'Connecting',
@@ -79,6 +80,16 @@ const STATUS_LABELS: Record<ConnectionState, string> = {
   disconnected: 'Disconnected',
   reconnecting: 'Reconnecting',
   'auth-failed': 'Auth failed'
+}
+
+function waitForFitLayoutSettle(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setTimeout(resolve, FIT_LAYOUT_SETTLE_MS)
+      })
+    })
+  })
 }
 
 function TerminalPaneView({
@@ -286,6 +297,10 @@ export default function SessionScreen() {
       if (!clientId) return
       const seq = subscribeSeqRef.current.get(handle)
 
+      // Why: the first session render can measure the WebView before the
+      // accessory/input chrome has fully settled. Waiting matches the remount
+      // path, where phone-fit already gets the correct unobscured height.
+      await waitForFitLayoutSettle()
       const dims = await getTerminalRef(handle)?.measureFitDimensions()
       if (!dims) return
       if (
