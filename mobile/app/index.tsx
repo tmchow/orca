@@ -24,6 +24,7 @@ import { StatusDot } from '../src/components/StatusDot'
 import { TextInputModal } from '../src/components/TextInputModal'
 import { ActionSheetModal } from '../src/components/ActionSheetModal'
 import { ConfirmModal } from '../src/components/ConfirmModal'
+import { setCachedWorktrees } from '../src/cache/worktree-cache'
 import { colors, spacing, radii, typography } from '../src/theme/mobile-theme'
 
 function endpointLabel(endpoint: string): string {
@@ -100,7 +101,9 @@ function fetchWorktreeInfo(
     .sendRequest('worktree.ps')
     .then((response) => {
       if (response.ok) {
-        const worktrees = response.result as WorktreeSummary[]
+        const result = response.result as { worktrees: WorktreeSummary[] }
+        const worktrees = result.worktrees ?? []
+        setCachedWorktrees(hostId, worktrees)
         const activeStatuses = new Set(['working', 'active', 'permission'])
         const active = worktrees.filter((w) => w.status && activeStatuses.has(w.status))
         const lastActive = active.length > 0 ? active[0] : (worktrees[0] ?? null)
@@ -263,14 +266,7 @@ export default function HomeScreen() {
       {hosts.length === 0 ? (
         /* ─── Empty state: onboarding ─── */
         <View style={styles.emptyContainer}>
-          <View style={styles.emptyGreeting}>
-            <Text style={styles.heroTitle}>Welcome to Orca</Text>
-          </View>
-
           <View style={styles.emptyHero}>
-            <View style={styles.emptyGlyph}>
-              <Monitor size={36} color={colors.textSecondary} strokeWidth={1.5} />
-            </View>
             <Text style={styles.emptyTitle}>Connect your desktop</Text>
             <Text style={styles.emptyBody}>
               Pair with Orca on your computer to monitor worktrees, watch agents work, and manage
@@ -318,7 +314,7 @@ export default function HomeScreen() {
                     <Text style={styles.statValue}>
                       {stats.totalAgentsSpawned.toLocaleString()}
                     </Text>
-                    <Text style={styles.statLabel}>Agents</Text>
+                    <Text style={styles.statLabel}>Agents spawned</Text>
                   </View>
                   <View style={styles.statCard}>
                     <View style={styles.statIcon}>
@@ -332,7 +328,7 @@ export default function HomeScreen() {
                       <GitPullRequest size={14} color={colors.textMuted} />
                     </View>
                     <Text style={styles.statValue}>{stats.totalPRsCreated.toLocaleString()}</Text>
-                    <Text style={styles.statLabel}>PRs</Text>
+                    <Text style={styles.statLabel}>PRs created</Text>
                   </View>
                 </View>
               )}
@@ -360,12 +356,6 @@ export default function HomeScreen() {
                     size={20}
                     color={connected ? colors.textPrimary : colors.textSecondary}
                   />
-                  <View
-                    style={[
-                      styles.hostStatusRing,
-                      { backgroundColor: connected ? colors.statusGreen : colors.textMuted }
-                    ]}
-                  />
                 </View>
                 <View style={styles.hostMain}>
                   <Text
@@ -375,23 +365,18 @@ export default function HomeScreen() {
                     {item.name}
                   </Text>
                   <View style={styles.hostMeta}>
-                    {connected && info ? (
-                      <>
-                        <Text style={styles.hostMetaItem}>
-                          {info.totalWorktrees} worktree{info.totalWorktrees !== 1 ? 's' : ''}
-                        </Text>
-                        {info.activeCount > 0 && (
-                          <>
-                            <View style={styles.hostMetaDot} />
-                            <Text style={[styles.hostMetaItem, { color: colors.statusGreen }]}>
-                              {info.activeCount} active
-                            </Text>
-                          </>
-                        )}
-                      </>
-                    ) : (
-                      <Text style={styles.hostMetaItem}>{STATUS_LABELS[state]}</Text>
-                    )}
+                    <View
+                      style={[
+                        styles.statusDot,
+                        { backgroundColor: connected ? colors.statusGreen : colors.textMuted }
+                      ]}
+                    />
+                    <Text style={styles.hostMetaItem}>
+                      {STATUS_LABELS[state]}
+                      {connected && info
+                        ? ` · ${info.totalWorktrees} worktree${info.totalWorktrees !== 1 ? 's' : ''}${info.activeCount > 0 ? ` · ${info.activeCount} active` : ''}`
+                        : ''}
+                    </Text>
                   </View>
                 </View>
                 <ChevronRight size={16} color={colors.textMuted} />
@@ -408,7 +393,7 @@ export default function HomeScreen() {
                     style={({ pressed }) => [styles.resumeCard, pressed && styles.hostCardPressed]}
                     onPress={() =>
                       router.push(
-                        `/h/${resumeWorktree.hostId}/terminal/${resumeWorktree.worktree.worktreeId}`
+                        `/h/${resumeWorktree.hostId}/session/${encodeURIComponent(resumeWorktree.worktree.worktreeId)}`
                       )
                     }
                   >
@@ -667,16 +652,6 @@ const styles = StyleSheet.create({
     marginRight: 14,
     position: 'relative'
   },
-  hostStatusRing: {
-    position: 'absolute',
-    bottom: -2,
-    right: -2,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 2,
-    borderColor: colors.bgPanel
-  },
   hostMain: {
     flex: 1,
     minWidth: 0,
@@ -691,6 +666,7 @@ const styles = StyleSheet.create({
   hostMeta: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
     marginTop: 3
   },
   hostMetaItem: {
@@ -704,6 +680,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.textMuted,
     marginHorizontal: 8
   },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5
+  },
 
   /* ─── Resume card ─── */
   resumeCard: {
@@ -713,16 +694,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.borderSubtle,
     borderRadius: radii.card,
-    padding: 14,
-    gap: 12
+    paddingLeft: spacing.md,
+    paddingRight: spacing.md,
+    paddingVertical: 14
   },
   resumeIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    width: 46,
+    height: 46,
+    borderRadius: 13,
+    backgroundColor: colors.bgRaised,
     alignItems: 'center',
-    justifyContent: 'center'
+    justifyContent: 'center',
+    marginRight: 14
   },
   resumeMain: {
     flex: 1,
@@ -737,16 +720,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 2
+    marginTop: 3
   },
   repoDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3
+    width: 7,
+    height: 7,
+    borderRadius: 3.5
   },
   resumeSubText: {
-    fontSize: 11,
-    color: colors.textMuted,
+    fontSize: 12,
+    color: colors.textSecondary,
     flex: 1
   },
 
@@ -795,17 +778,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 32,
     paddingBottom: 40
-  },
-  emptyGlyph: {
-    width: 80,
-    height: 80,
-    borderRadius: 24,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 28
   },
   emptyTitle: {
     fontSize: 22,

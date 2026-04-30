@@ -37,6 +37,7 @@ import { PickerModal, type PickerOption } from '../../../src/components/PickerMo
 import { ActionSheetContent } from '../../../src/components/ActionSheetModal'
 import { ConfirmModal } from '../../../src/components/ConfirmModal'
 import { BottomDrawer } from '../../../src/components/BottomDrawer'
+import { getCachedWorktrees } from '../../../src/cache/worktree-cache'
 import { colors, spacing, typography } from '../../../src/theme/mobile-theme'
 import {
   loadPinnedIds,
@@ -232,15 +233,16 @@ function buildSections(
 }
 
 export default function HostScreen() {
-  const { hostId } = useLocalSearchParams<{ hostId: string }>()
+  const { hostId, action } = useLocalSearchParams<{ hostId: string; action?: string }>()
   const router = useRouter()
+  const cached = hostId ? (getCachedWorktrees(hostId) as Worktree[] | null) : null
   const [client, setClient] = useState<RpcClient | null>(null)
   const [connState, setConnState] = useState<ConnectionState>('disconnected')
-  const [worktrees, setWorktrees] = useState<Worktree[]>([])
-  const [worktreesLoaded, setWorktreesLoaded] = useState(false)
+  const [worktrees, setWorktrees] = useState<Worktree[]>(cached ?? [])
+  const [worktreesLoaded, setWorktreesLoaded] = useState(cached != null)
   const [hostName, setHostName] = useState('')
   const [error, setError] = useState('')
-  const [lastKnownWorktrees, setLastKnownWorktrees] = useState<Worktree[]>([])
+  const [lastKnownWorktrees, setLastKnownWorktrees] = useState<Worktree[]>(cached ?? [])
   const [search, setSearch] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [sortMode, setSortMode] = useState<SortMode>('smart')
@@ -265,6 +267,10 @@ export default function HostScreen() {
   const [_prefsLoaded, setPrefsLoaded] = useState(false)
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
 
+  useEffect(() => {
+    if (action === 'newWorktree') setShowNewWorktree(true)
+  }, [action])
+
   // Load persisted pins and preferences
   useEffect(() => {
     if (!hostId) return
@@ -284,25 +290,36 @@ export default function HostScreen() {
 
   useEffect(() => {
     let rpcClient: RpcClient | null = null
-    setWorktreesLoaded(false)
-    setWorktrees([])
+    const hasCached = hostId ? getCachedWorktrees(hostId) != null : false
+    if (!hasCached) {
+      setWorktreesLoaded(false)
+      setWorktrees([])
+    }
 
-    void (async () => {
-      const hosts = await loadHosts()
-      const host = hosts.find((h) => h.id === hostId)
-      if (!host) {
-        setError('Host not found')
-        return
-      }
+    // Why: defer the RPC connection until after the navigation animation
+    // completes. Without this, connect() and loadHosts() block the JS
+    // thread during mount, delaying the screen transition by ~200-400ms.
+    // With cached worktrees the user sees content instantly; the live
+    // connection starts once the animation settles.
+    const rafId = requestAnimationFrame(() => {
+      void (async () => {
+        const hosts = await loadHosts()
+        const host = hosts.find((h) => h.id === hostId)
+        if (!host) {
+          setError('Host not found')
+          return
+        }
 
-      setHostName(host.name)
-      rpcClient = connect(host.endpoint, host.deviceToken, host.publicKeyB64, setConnState)
-      setClient(rpcClient)
+        setHostName(host.name)
+        rpcClient = connect(host.endpoint, host.deviceToken, host.publicKeyB64, setConnState)
+        setClient(rpcClient)
 
-      await updateLastConnected(host.id)
-    })()
+        await updateLastConnected(host.id)
+      })()
+    })
 
     return () => {
+      cancelAnimationFrame(rafId)
       rpcClient?.close()
     }
   }, [hostId])

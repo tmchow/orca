@@ -8,6 +8,7 @@ import {
   loadPushNotificationsEnabled,
   savePushNotificationsEnabled
 } from '../src/storage/preferences'
+import { ensureNotificationPermissions } from '../src/notifications/mobile-notifications'
 
 export default function NotificationsScreen() {
   const router = useRouter()
@@ -21,6 +22,10 @@ export default function NotificationsScreen() {
   )
 
   const togglePush = async (value: boolean) => {
+    if (value) {
+      const granted = await ensureNotificationPermissions()
+      if (!granted) return
+    }
     setPushEnabled(value)
     await savePushNotificationsEnabled(value)
   }
