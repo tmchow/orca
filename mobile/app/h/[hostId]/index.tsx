@@ -34,7 +34,8 @@ import { StatusDot } from '../../../src/components/StatusDot'
 import { NewWorktreeModal } from '../../../src/components/NewWorktreeModal'
 import { AgentSpinner } from '../../../src/components/AgentSpinner'
 import { PickerModal, type PickerOption } from '../../../src/components/PickerModal'
-import { ActionSheetModal } from '../../../src/components/ActionSheetModal'
+import { ActionSheetContent } from '../../../src/components/ActionSheetModal'
+import { ConfirmModal } from '../../../src/components/ConfirmModal'
 import { BottomDrawer } from '../../../src/components/BottomDrawer'
 import { colors, spacing, typography } from '../../../src/theme/mobile-theme'
 import {
@@ -257,6 +258,7 @@ export default function HostScreen() {
   const [confirmDelete, setConfirmDelete] = useState<Worktree | null>(null)
   const [confirmRemoveHost, setConfirmRemoveHost] = useState(false)
   const [showNewWorktree, setShowNewWorktree] = useState(false)
+  const [sleptIds, setSleptIds] = useState<Set<string>>(new Set())
 
   // Persisted pin state
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set())
@@ -315,6 +317,22 @@ export default function HostScreen() {
         setWorktrees(result.worktrees)
         setLastKnownWorktrees(result.worktrees)
         setWorktreesLoaded(true)
+
+        // Clear optimistic sleep overrides once the server confirms the
+        // worktree is actually inactive (liveTerminalCount dropped to 0).
+        setSleptIds((prev) => {
+          if (prev.size === 0) {
+            return prev
+          }
+          const still = new Set<string>()
+          for (const id of prev) {
+            const wt = result.worktrees.find((w) => w.worktreeId === id)
+            if (wt && wt.liveTerminalCount > 0) {
+              still.add(id)
+            }
+          }
+          return still.size === prev.size ? prev : still
+        })
 
         // Sync local pin state from server so desktop-initiated pins/unpins
         // are reflected without relying on stale AsyncStorage.
@@ -490,10 +508,20 @@ export default function HostScreen() {
     [hostId]
   )
 
-  const displayWorktrees =
-    connState === 'disconnected' || connState === 'reconnecting' || connState === 'auth-failed'
-      ? lastKnownWorktrees
-      : worktrees
+  const displayWorktrees = useMemo(() => {
+    const base =
+      connState === 'disconnected' || connState === 'reconnecting' || connState === 'auth-failed'
+        ? lastKnownWorktrees
+        : worktrees
+    if (sleptIds.size === 0) {
+      return base
+    }
+    return base.map((w) =>
+      sleptIds.has(w.worktreeId)
+        ? { ...w, liveTerminalCount: 0, hasAttachedPty: false, status: 'inactive' as const }
+        : w
+    )
+  }, [connState, worktrees, lastKnownWorktrees, sleptIds])
 
   const uniqueRepos = useMemo(() => {
     const repos = new Map<string, string>()
@@ -831,83 +859,99 @@ export default function HostScreen() {
         )}
       </BottomDrawer>
 
-      {/* Worktree long-press action sheet */}
-      <ActionSheetModal
-        visible={actionTarget != null && confirmDelete == null}
-        title={actionTarget ? actionTarget.displayName || actionTarget.repo : undefined}
-        message={actionTarget?.branch}
-        actions={
-          actionTarget
-            ? [
-                {
-                  label: 'Sleep',
-                  icon: Moon,
-                  onPress: () => {
-                    if (client) {
-                      void client.sendRequest('worktree.sleep', {
-                        worktree: `id:${actionTarget.worktreeId}`
-                      })
-                    }
-                  }
-                },
-                {
-                  label: isWorktreePinned(actionTarget, pinnedIds) ? 'Unpin' : 'Pin',
-                  onPress: () => togglePin(actionTarget.worktreeId)
-                },
-                {
-                  label: 'Delete',
-                  destructive: true,
-                  onPress: () => setConfirmDelete(actionTarget)
-                }
-              ]
-            : []
-        }
-        onClose={() => setActionTarget(null)}
-      />
-
-      {/* Worktree delete confirmation */}
-      <ActionSheetModal
-        visible={confirmDelete != null}
-        title="Delete Worktree"
-        message={
-          confirmDelete
-            ? `Delete "${confirmDelete.displayName || confirmDelete.repo}" (${confirmDelete.branch})?`
-            : undefined
-        }
-        actions={
-          confirmDelete
-            ? [
-                {
-                  label: 'Delete',
-                  destructive: true,
-                  onPress: () => {
-                    void handleDeleteWorktree(confirmDelete)
-                    setConfirmDelete(null)
-                    setActionTarget(null)
-                  }
-                }
-              ]
-            : []
-        }
+      {/* Worktree long-press action sheet (inline confirm to avoid double-Modal lag) */}
+      <BottomDrawer
+        visible={actionTarget != null}
         onClose={() => {
           setConfirmDelete(null)
           setActionTarget(null)
         }}
-      />
+      >
+        {confirmDelete ? (
+          <View>
+            <View style={styles.confirmContent}>
+              <Text style={styles.confirmTitle}>Delete Worktree</Text>
+              <Text style={styles.confirmMessage}>
+                Delete "{confirmDelete.displayName || confirmDelete.repo}" ({confirmDelete.branch})?
+              </Text>
+            </View>
+            <View style={styles.confirmButtons}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.confirmBtn,
+                  styles.confirmBtnCancel,
+                  pressed && styles.confirmBtnPressed
+                ]}
+                onPress={() => setConfirmDelete(null)}
+              >
+                <Text style={styles.confirmBtnCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.confirmBtn,
+                  styles.confirmBtnDestructive,
+                  pressed && styles.confirmBtnPressed
+                ]}
+                onPress={() => {
+                  if (confirmDelete) {
+                    void handleDeleteWorktree(confirmDelete)
+                  }
+                  setConfirmDelete(null)
+                  setActionTarget(null)
+                }}
+              >
+                <Text style={styles.confirmBtnDestructiveText}>Delete</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <ActionSheetContent
+            title={actionTarget ? actionTarget.displayName || actionTarget.repo : undefined}
+            message={actionTarget?.branch}
+            actions={
+              actionTarget
+                ? [
+                    {
+                      label: 'Sleep',
+                      icon: Moon,
+                      onPress: () => {
+                        if (client) {
+                          setSleptIds((prev) => new Set(prev).add(actionTarget.worktreeId))
+                          void client.sendRequest('worktree.sleep', {
+                            worktree: `id:${actionTarget.worktreeId}`
+                          })
+                        }
+                        setActionTarget(null)
+                      }
+                    },
+                    {
+                      label: isWorktreePinned(actionTarget, pinnedIds) ? 'Unpin' : 'Pin',
+                      onPress: () => {
+                        togglePin(actionTarget.worktreeId)
+                        setActionTarget(null)
+                      }
+                    },
+                    {
+                      label: 'Delete',
+                      destructive: true,
+                      onPress: () => setConfirmDelete(actionTarget)
+                    }
+                  ]
+                : []
+            }
+          />
+        )}
+      </BottomDrawer>
 
       {/* Host remove confirmation */}
-      <ActionSheetModal
+      <ConfirmModal
         visible={confirmRemoveHost}
         title="Remove Host"
         message={`Remove "${hostName}"? You can re-pair later.`}
-        actions={[
-          {
-            label: 'Remove',
-            destructive: true,
-            onPress: () => void handleRemoveHost()
-          }
-        ]}
-        onClose={() => setConfirmRemoveHost(false)}
+        confirmLabel="Remove"
+        destructive
+        onConfirm={() => void handleRemoveHost()}
+        onCancel={() => setConfirmRemoveHost(false)}
       />
 
       <NewWorktreeModal
@@ -1251,5 +1295,48 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4
+  },
+  confirmContent: {
+    paddingBottom: spacing.lg
+  },
+  confirmTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.textPrimary
+  },
+  confirmMessage: {
+    fontSize: typography.bodySize,
+    color: colors.textSecondary,
+    marginTop: spacing.xs,
+    lineHeight: 20
+  },
+  confirmButtons: {
+    flexDirection: 'row',
+    gap: spacing.sm
+  },
+  confirmBtn: {
+    flex: 1,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: 10,
+    alignItems: 'center'
+  },
+  confirmBtnCancel: {
+    backgroundColor: colors.bgPanel
+  },
+  confirmBtnDestructive: {
+    backgroundColor: colors.statusRed
+  },
+  confirmBtnPressed: {
+    opacity: 0.7
+  },
+  confirmBtnCancelText: {
+    fontSize: typography.bodySize,
+    fontWeight: '600',
+    color: colors.textSecondary
+  },
+  confirmBtnDestructiveText: {
+    fontSize: typography.bodySize,
+    fontWeight: '600',
+    color: '#fff'
   }
 })

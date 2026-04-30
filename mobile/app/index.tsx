@@ -20,6 +20,7 @@ import { OrcaLogo } from '../src/components/OrcaLogo'
 import { StatusDot } from '../src/components/StatusDot'
 import { TextInputModal } from '../src/components/TextInputModal'
 import { ActionSheetModal } from '../src/components/ActionSheetModal'
+import { ConfirmModal } from '../src/components/ConfirmModal'
 import { colors, spacing, radii, typography } from '../src/theme/mobile-theme'
 
 function endpointLabel(endpoint: string): string {
@@ -100,15 +101,25 @@ export default function HomeScreen() {
   useEffect(() => {
     let disposed = false
     const notifCleanups: Array<() => void> = []
-    const clients = hosts.map((host) => {
+    const clients = hosts.flatMap((host) => {
+      if (!host.publicKeyB64 || !host.deviceToken) {
+        setHostStates((prev) => ({ ...prev, [host.id]: 'auth-failed' }))
+        return []
+      }
       setHostStates((prev) => ({
         ...prev,
         [host.id]: prev[host.id] ?? 'connecting'
       }))
-      const client = connect(host.endpoint, host.deviceToken, host.publicKeyB64, (state) => {
-        if (disposed) return
-        setHostStates((prev) => ({ ...prev, [host.id]: state }))
-      })
+      let client: ReturnType<typeof connect>
+      try {
+        client = connect(host.endpoint, host.deviceToken, host.publicKeyB64, (state) => {
+          if (disposed) return
+          setHostStates((prev) => ({ ...prev, [host.id]: state }))
+        })
+      } catch {
+        setHostStates((prev) => ({ ...prev, [host.id]: 'auth-failed' }))
+        return []
+      }
 
       let unsubNotif: (() => void) | null = null
       let statsFetched = false
@@ -131,7 +142,7 @@ export default function HomeScreen() {
         unsubNotif?.()
       })
 
-      return client
+      return [client]
     })
 
     clientsRef.current = clients
@@ -221,6 +232,7 @@ export default function HomeScreen() {
           renderItem={({ item }) => (
             <Pressable
               style={({ pressed }) => [styles.hostCard, pressed && styles.hostCardPressed]}
+              disabled={hostStates[item.id] === 'auth-failed'}
               onPress={() => router.push(`/h/${item.id}`)}
               onLongPress={() => {
                 triggerMediumImpact()
@@ -301,18 +313,14 @@ export default function HomeScreen() {
         onCancel={() => setRenameTarget(null)}
       />
 
-      <ActionSheetModal
+      <ConfirmModal
         visible={confirmRemove != null}
         title="Remove Host"
         message={`Remove "${confirmRemove?.name}"? You can re-pair later.`}
-        actions={[
-          {
-            label: 'Remove',
-            destructive: true,
-            onPress: () => void handleRemove()
-          }
-        ]}
-        onClose={() => setConfirmRemove(null)}
+        confirmLabel="Remove"
+        destructive
+        onConfirm={() => void handleRemove()}
+        onCancel={() => setConfirmRemove(null)}
       />
 
       <Pressable style={styles.settingsButton} onPress={() => router.push('/settings')}>

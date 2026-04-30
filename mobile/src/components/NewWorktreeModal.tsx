@@ -676,7 +676,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radii.button,
-    minWidth: 72,
+    minWidth: 160,
     alignItems: 'center'
   },
   createButtonDisabled: {

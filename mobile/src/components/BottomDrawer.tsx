@@ -1,6 +1,5 @@
 import { type ReactNode, useCallback, useEffect } from 'react'
 import {
-  Modal,
   View,
   Pressable,
   StyleSheet,
@@ -28,6 +27,8 @@ const SPRING_CONFIG = { damping: 28, stiffness: 400 }
 // so the drawer resists upward dragging — a subtle polish touch that signals
 // the drawer cannot expand further.
 const RUBBER_BAND_FACTOR = 0.25
+const SHOW_DURATION = 180
+const HIDE_DURATION = 150
 
 type Props = {
   visible: boolean
@@ -37,7 +38,7 @@ type Props = {
 
 export function BottomDrawer({ visible, onClose, children }: Props) {
   const translateY = useSharedValue(0)
-  const backdropOpacity = useSharedValue(0)
+  const progress = useSharedValue(0)
   const keyboardOffset = useSharedValue(0)
   const { height: screenHeight } = useWindowDimensions()
   const insets = useSafeAreaInsets()
@@ -45,7 +46,9 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
   useEffect(() => {
     if (visible) {
       translateY.value = 0
-      backdropOpacity.value = withTiming(1, { duration: 200 })
+      progress.value = withTiming(1, { duration: SHOW_DURATION })
+    } else {
+      progress.value = withTiming(0, { duration: HIDE_DURATION })
     }
   }, [visible])
 
@@ -91,25 +94,40 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
         const velocity = Math.max(e.velocityY, 800)
         const remaining = screenHeight - e.translationY
         const duration = Math.min(Math.max((remaining / velocity) * 1000, 120), 300)
-        translateY.value = withTiming(screenHeight, { duration }, () => {
+        translateY.value = withTiming(screenHeight, { duration })
+        progress.value = withTiming(0, { duration }, () => {
           runOnJS(dismiss)()
         })
-        backdropOpacity.value = withTiming(0, { duration })
       } else {
         translateY.value = withSpring(0, SPRING_CONFIG)
       }
     })
 
   const drawerStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value - keyboardOffset.value }]
+    transform: [
+      {
+        translateY:
+          interpolate(progress.value, [0, 1], [screenHeight, 0], Extrapolation.CLAMP) +
+          translateY.value -
+          keyboardOffset.value
+      }
+    ]
   }))
 
-  const backdropStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(translateY.value, [0, 300], [1, 0], Extrapolation.CLAMP)
-  }))
+  const backdropStyle = useAnimatedStyle(() => {
+    const dragFade = interpolate(translateY.value, [0, 300], [1, 0], Extrapolation.CLAMP)
+    return { opacity: progress.value * dragFade }
+  })
+
+  const pointerStyle = useAnimatedStyle(
+    () =>
+      ({
+        pointerEvents: progress.value > 0 ? 'auto' : 'none'
+      }) as { pointerEvents: 'auto' | 'none' }
+  )
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Animated.View style={[styles.overlay, pointerStyle]}>
       <GestureHandlerRootView style={styles.root}>
         <Animated.View style={[styles.backdrop, backdropStyle]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} />
@@ -133,11 +151,15 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
           </GestureDetector>
         </View>
       </GestureHandlerRootView>
-    </Modal>
+    </Animated.View>
   )
 }
 
 const styles = StyleSheet.create({
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1000
+  },
   root: {
     flex: 1
   },

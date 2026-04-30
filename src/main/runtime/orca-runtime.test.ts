@@ -1249,6 +1249,7 @@ describe('OrcaRuntimeService', () => {
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
       closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
       terminalFitOverrideChanged: vi.fn()
     })
     runtime.attachWindow(TEST_WINDOW_ID)
@@ -1274,6 +1275,7 @@ describe('OrcaRuntimeService', () => {
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
       closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
       terminalFitOverrideChanged: vi.fn()
     })
     runtime.attachWindow(1)
@@ -1442,6 +1444,7 @@ describe('OrcaRuntimeService', () => {
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
       closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
       terminalFitOverrideChanged: vi.fn()
     })
 
@@ -1575,6 +1578,7 @@ describe('OrcaRuntimeService', () => {
         renameTerminal: vi.fn(),
         focusTerminal: vi.fn(),
         closeTerminal: vi.fn(),
+        sleepWorktree: vi.fn(),
         terminalFitOverrideChanged: (ptyId, mode, cols, rows) => {
           notifications.push({ ptyId, mode, cols, rows })
         }

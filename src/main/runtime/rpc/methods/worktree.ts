@@ -72,6 +72,11 @@ export const WORKTREE_METHODS: RpcMethod[] = [
     })
   }),
   defineMethod({
+    name: 'worktree.sleep',
+    params: WorktreeSelector,
+    handler: async (params, { runtime }) => runtime.sleepManagedWorktree(params.worktree)
+  }),
+  defineMethod({
     name: 'worktree.activate',
     params: WorktreeSelector,
     handler: async (params, { runtime }) => runtime.activateManagedWorktree(params.worktree)

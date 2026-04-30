@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback } from 'react'
 import { View, StyleSheet } from 'react-native'
 import { Stack } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
@@ -27,25 +27,16 @@ Notifications.setNotificationHandler({
 })
 
 export default function RootLayout() {
-  const [appReady, setAppReady] = useState(false)
-
-  // Why: onLayout fires once the root view has been measured and rendered,
-  // which is the earliest safe moment to hide the native splash.
-  const onLayoutRootView = useCallback(async () => {
-    setAppReady(true)
+  // Why: hide the native splash only once the navigation Stack has been laid
+  // out — this is the earliest moment the user will see actual app content.
+  // Previously the splash hid when a placeholder View rendered, leaving a
+  // grey gap before the real screen appeared.
+  const onNavigatorLayout = useCallback(async () => {
     await SplashScreen.hideAsync()
   }, [])
 
-  if (!appReady) {
-    return (
-      <View style={styles.splash} onLayout={onLayoutRootView}>
-        <OrcaLogo size={56} color={colors.textPrimary} />
-      </View>
-    )
-  }
-
   return (
-    <>
+    <View style={styles.root} onLayout={onNavigatorLayout}>
       <StatusBar style="light" />
       <Stack
         screenOptions={{
@@ -70,15 +61,13 @@ export default function RootLayout() {
         <Stack.Screen name="about" options={{ headerShown: false }} />
         <Stack.Screen name="h" options={{ headerShown: false }} />
       </Stack>
-    </>
+    </View>
   )
 }
 
 const styles = StyleSheet.create({
-  splash: {
+  root: {
     flex: 1,
-    backgroundColor: colors.bgBase,
-    alignItems: 'center',
-    justifyContent: 'center'
+    backgroundColor: colors.bgBase
   }
 })

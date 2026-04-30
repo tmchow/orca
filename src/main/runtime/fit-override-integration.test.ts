@@ -95,6 +95,7 @@ describe('fit override integration', () => {
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
       closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
       terminalFitOverrideChanged: (ptyId, mode, cols, rows) => {
         notifications.push({ ptyId, mode, cols, rows })
       }
@@ -198,6 +199,7 @@ describe('fit override integration', () => {
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
       closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
       terminalFitOverrideChanged: vi.fn()
     })
 
@@ -258,6 +260,7 @@ describe('fit override integration', () => {
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
       closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
       terminalFitOverrideChanged: vi.fn()
     })
 

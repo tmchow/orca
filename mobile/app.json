@@ -9,6 +9,8 @@
     "scheme": "orca",
     "newArchEnabled": true,
     "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
       "backgroundColor": "#111111"
     },
     "ios": {
@@ -20,11 +22,18 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#111111"
       },
+      "allowBackup": false,
       "package": "com.stably.orca.mobile"
     },
     "plugins": [
       "expo-router",
-      "expo-splash-screen",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "backgroundColor": "#111111"
+        }
+      ],
       [
         "expo-camera",
         {

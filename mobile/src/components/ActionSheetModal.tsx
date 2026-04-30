@@ -7,6 +7,7 @@ export type ActionSheetAction = {
   label: string
   icon?: LucideIcon
   destructive?: boolean
+  skipAutoClose?: boolean
   onPress: () => void
 }
 
@@ -24,9 +25,16 @@ function iconForAction(label: string, destructive?: boolean, icon?: LucideIcon):
   return Edit3
 }
 
-export function ActionSheetModal({ visible, title, message, actions, onClose }: Props) {
+type ContentProps = {
+  title?: string
+  message?: string
+  actions: ActionSheetAction[]
+  onClose?: () => void
+}
+
+export function ActionSheetContent({ title, message, actions, onClose }: ContentProps) {
   return (
-    <BottomDrawer visible={visible} onClose={onClose}>
+    <>
       {(title || message) && (
         <View style={styles.header}>
           {title ? (
@@ -47,8 +55,10 @@ export function ActionSheetModal({ visible, title, message, actions, onClose }: 
               <Pressable
                 style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
                 onPress={() => {
-                  onClose()
                   action.onPress()
+                  if (!action.skipAutoClose && onClose) {
+                    onClose()
+                  }
                 }}
               >
                 <Icon
@@ -65,6 +75,14 @@ export function ActionSheetModal({ visible, title, message, actions, onClose }: 
           )
         })}
       </View>
+    </>
+  )
+}
+
+export function ActionSheetModal({ visible, title, message, actions, onClose }: Props) {
+  return (
+    <BottomDrawer visible={visible} onClose={onClose}>
+      <ActionSheetContent title={title} message={message} actions={actions} onClose={onClose} />
     </BottomDrawer>
   )
 }

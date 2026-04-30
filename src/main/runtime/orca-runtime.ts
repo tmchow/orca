@@ -199,6 +199,7 @@ type RuntimeNotifier = {
   renameTerminal(tabId: string, title: string | null): void
   focusTerminal(tabId: string, worktreeId: string): void
   closeTerminal(tabId: string, paneRuntimeId?: number): void
+  sleepWorktree(worktreeId: string): void
   terminalFitOverrideChanged(
     ptyId: string,
     mode: 'mobile-fit' | 'desktop-fit',
@@ -1566,6 +1567,15 @@ export class OrcaRuntimeService {
 
   async showManagedWorktree(worktreeSelector: string) {
     return await this.resolveWorktreeSelector(worktreeSelector)
+  }
+
+  async sleepManagedWorktree(worktreeSelector: string): Promise<{ worktreeId: string }> {
+    const worktree = await this.resolveWorktreeSelector(worktreeSelector)
+    // Why: sleep is renderer-initiated on desktop (it tears down tab state
+    // before killing PTYs). The notifier tells the renderer to run its own
+    // sleep flow so all cleanup happens in the correct order.
+    this.notifier?.sleepWorktree(worktree.id)
+    return { worktreeId: worktree.id }
   }
 
   async activateManagedWorktree(worktreeSelector: string): Promise<{
