@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import {
   View,
   Pressable,
@@ -37,6 +37,7 @@ type Props = {
 }
 
 export function BottomDrawer({ visible, onClose, children }: Props) {
+  const [mounted, setMounted] = useState(visible)
   const translateY = useSharedValue(0)
   const progress = useSharedValue(0)
   const keyboardOffset = useSharedValue(0)
@@ -45,12 +46,25 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
 
   useEffect(() => {
     if (visible) {
+      setMounted(true)
+    }
+  }, [visible])
+
+  useEffect(() => {
+    if (!mounted) return
+
+    if (visible) {
       translateY.value = 0
       progress.value = withTiming(1, { duration: SHOW_DURATION })
     } else {
-      progress.value = withTiming(0, { duration: HIDE_DURATION })
+      Keyboard.dismiss()
+      progress.value = withTiming(0, { duration: HIDE_DURATION }, (finished) => {
+        if (finished) {
+          runOnJS(setMounted)(false)
+        }
+      })
     }
-  }, [visible])
+  }, [mounted, visible])
 
   // Why: KeyboardAvoidingView and useAnimatedKeyboard are both unreliable
   // inside Modal (iOS ignores KAV; Android needs adjustNothing for
@@ -125,6 +139,10 @@ export function BottomDrawer({ visible, onClose, children }: Props) {
         pointerEvents: progress.value > 0 ? 'auto' : 'none'
       }) as { pointerEvents: 'auto' | 'none' }
   )
+
+  // Why: hidden drawers can contain auto-focused inputs; keeping them mounted
+  // lets Android open the keyboard even when the drawer is offscreen.
+  if (!mounted) return null
 
   return (
     <Animated.View style={[styles.overlay, pointerStyle]}>
