@@ -94,15 +94,15 @@ Use this when terminal output does not render on device and you need to split se
 
 ```bash
 cd mobile
-ORCA_MOBILE_WS_URL=ws://127.0.0.1:6768 pnpm exec tsx scripts/test-subscribe.ts <deviceToken>
+ORCA_MOBILE_WS_URL=ws://127.0.0.1:6768 pnpm exec tsx scripts/test-subscribe.ts <deviceToken> <serverPublicKeyB64>
 ```
 
-You can pass a worktree selector as the second argument:
+You can pass a worktree selector as the third argument:
 
 ```bash
-pnpm exec tsx scripts/test-subscribe.ts <deviceToken> "id:<worktreeId>"
-pnpm exec tsx scripts/test-subscribe.ts <deviceToken> "path:/absolute/worktree/path"
-pnpm exec tsx scripts/test-subscribe.ts <deviceToken> "name:my-worktree"
+pnpm exec tsx scripts/test-subscribe.ts <deviceToken> <serverPublicKeyB64> "id:<worktreeId>"
+pnpm exec tsx scripts/test-subscribe.ts <deviceToken> <serverPublicKeyB64> "path:/absolute/worktree/path"
+pnpm exec tsx scripts/test-subscribe.ts <deviceToken> <serverPublicKeyB64> "name:my-worktree"
 ```
 
 The expected result includes:

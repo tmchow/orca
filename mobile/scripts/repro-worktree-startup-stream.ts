@@ -246,8 +246,7 @@ async function run(ws: WebSocket): Promise<void> {
   ws.send(
     JSON.stringify({
       type: 'e2ee_hello',
-      publicKeyB64: toBase64(clientKeys.publicKey),
-      deviceToken: token
+      publicKeyB64: toBase64(clientKeys.publicKey)
     })
   )
 
@@ -258,6 +257,24 @@ async function run(ws: WebSocket): Promise<void> {
       const msg = JSON.parse(data.toString()) as { type?: string }
       if (msg.type !== 'e2ee_ready') {
         reject(new Error(`Unexpected handshake response: ${data.toString()}`))
+        return
+      }
+      resolve()
+    })
+  })
+
+  sendRaw(ws, { type: 'e2ee_auth', deviceToken: token })
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error('Timed out waiting for e2ee_authenticated')),
+      5000
+    )
+    ws.once('message', (data) => {
+      clearTimeout(timeout)
+      const plaintext = decrypt(data.toString())
+      const msg = plaintext ? (JSON.parse(plaintext) as { type?: string }) : null
+      if (msg?.type !== 'e2ee_authenticated') {
+        reject(new Error(`Unexpected auth response: ${data.toString()}`))
         return
       }
       resolve()

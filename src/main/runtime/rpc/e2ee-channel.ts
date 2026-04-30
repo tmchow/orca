@@ -4,7 +4,7 @@
 import type { WebSocket } from 'ws'
 import { deriveSharedKey, encrypt, decrypt } from './e2ee-crypto'
 
-type ChannelState = 'awaiting_hello' | 'ready'
+type ChannelState = 'awaiting_hello' | 'awaiting_auth' | 'ready'
 
 const HANDSHAKE_TIMEOUT_MS = 10_000
 const MAX_CONSECUTIVE_DECRYPT_FAILURES = 5
@@ -12,6 +12,10 @@ const MAX_CONSECUTIVE_DECRYPT_FAILURES = 5
 type E2EEHello = {
   type: 'e2ee_hello'
   publicKeyB64: string
+}
+
+type E2EEAuth = {
+  type: 'e2ee_auth'
   deviceToken: string
 }
 
@@ -79,6 +83,11 @@ export class E2EEChannel {
     }
 
     this.consecutiveFailures = 0
+    if (this.state === 'awaiting_auth') {
+      this.handleAuth(plaintext)
+      return
+    }
+
     const encryptedReply = (response: string) => {
       if (this.ws.readyState === this.ws.OPEN) {
         this.ws.send(encrypt(response, this.sharedKey!))
@@ -96,17 +105,10 @@ export class E2EEChannel {
       return
     }
 
-    if (hello.type !== 'e2ee_hello' || !hello.publicKeyB64 || !hello.deviceToken) {
+    if (hello.type !== 'e2ee_hello' || !hello.publicKeyB64) {
       this.onError(4001, 'Invalid e2ee_hello')
       return
     }
-
-    if (!this.validateToken(hello.deviceToken)) {
-      this.onError(4001, 'Unauthorized')
-      return
-    }
-
-    this.deviceToken = hello.deviceToken
 
     // Why: derive the shared key from our secret + client's public key.
     // Both sides compute the same shared secret via ECDH.
@@ -117,6 +119,37 @@ export class E2EEChannel {
     }
 
     this.sharedKey = deriveSharedKey(this.serverSecretKey, clientPublicKey)
+    this.state = 'awaiting_auth'
+
+    // Why: send e2ee_ready as plaintext — the client needs it to know the
+    // key exchange succeeded before it can send encrypted authentication.
+    if (this.ws.readyState === this.ws.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'e2ee_ready' }))
+    }
+  }
+
+  private handleAuth(plaintext: string): void {
+    let auth: E2EEAuth
+    try {
+      auth = JSON.parse(plaintext) as E2EEAuth
+    } catch {
+      this.sendEncryptedControl({ type: 'e2ee_error', error: { code: 'bad_auth' } })
+      this.onError(4001, 'Invalid e2ee_auth')
+      return
+    }
+
+    if (auth.type !== 'e2ee_auth' || !auth.deviceToken) {
+      this.sendEncryptedControl({ type: 'e2ee_error', error: { code: 'bad_auth' } })
+      this.onError(4001, 'Invalid e2ee_auth')
+      return
+    }
+    if (!this.validateToken(auth.deviceToken)) {
+      this.sendEncryptedControl({ type: 'e2ee_error', error: { code: 'unauthorized' } })
+      this.onError(4001, 'Unauthorized')
+      return
+    }
+
+    this.deviceToken = auth.deviceToken
     this.state = 'ready'
 
     if (this.handshakeTimer) {
@@ -124,14 +157,14 @@ export class E2EEChannel {
       this.handshakeTimer = null
     }
 
-    // Why: send e2ee_ready as plaintext — the client needs it to know the
-    // handshake succeeded before it starts encrypting. The first actual
-    // encrypted message from the server will implicitly prove key possession.
-    if (this.ws.readyState === this.ws.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'e2ee_ready' }))
-    }
-
+    this.sendEncryptedControl({ type: 'e2ee_authenticated' })
     this.onReady(this)
+  }
+
+  private sendEncryptedControl(message: unknown): void {
+    if (this.ws.readyState === this.ws.OPEN && this.sharedKey) {
+      this.ws.send(encrypt(JSON.stringify(message), this.sharedKey))
+    }
   }
 
   destroy(): void {

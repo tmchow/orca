@@ -1,4 +1,4 @@
-import type { RpcRequest, RpcResponse, RpcSuccess, ConnectionState } from './types'
+import type { RpcResponse, RpcSuccess, ConnectionState } from './types'
 import {
   generateKeyPair,
   deriveSharedKey,
@@ -106,8 +106,7 @@ export function connect(
       const ephemeral = generateKeyPair()
       const hello = JSON.stringify({
         type: 'e2ee_hello',
-        publicKeyB64: publicKeyToBase64(ephemeral.publicKey),
-        deviceToken
+        publicKeyB64: publicKeyToBase64(ephemeral.publicKey)
       })
       ws?.send(hello)
 
@@ -122,12 +121,31 @@ export function connect(
     ws.onmessage = (event) => {
       const raw = typeof event.data === 'string' ? event.data : String(event.data)
 
-      // Why: during handshaking, only accept e2ee_ready (plaintext).
-      // All other messages are silently discarded.
+      // Why: during handshaking, e2ee_ready is plaintext because it precedes
+      // encrypted auth; e2ee_authenticated/e2ee_error are encrypted.
       if (state === 'handshaking') {
         try {
           const msg = JSON.parse(raw)
           if (msg.type === 'e2ee_ready') {
+            sendEncrypted({ type: 'e2ee_auth', deviceToken })
+            return
+          }
+        } catch {
+          // Not plaintext JSON — fall through and try encrypted handshake messages.
+        }
+
+        if (!sharedKey || sharedKey.length !== 32) {
+          return
+        }
+
+        const plaintext = decrypt(raw, sharedKey)
+        if (plaintext === null) {
+          return
+        }
+
+        try {
+          const msg = JSON.parse(plaintext)
+          if (msg.type === 'e2ee_authenticated') {
             if (handshakeTimer) {
               clearTimeout(handshakeTimer)
               handshakeTimer = null
@@ -144,7 +162,7 @@ export function connect(
             rejectAllPending('Unauthorized — pairing may be revoked')
           }
         } catch {
-          // Not JSON — ignore during handshake
+          // Not JSON — ignore during handshake.
         }
         return
       }
@@ -252,7 +270,7 @@ export function connect(
     }
   }
 
-  function sendEncrypted(request: RpcRequest): boolean {
+  function sendEncrypted(request: unknown): boolean {
     if (ws && ws.readyState === WebSocket.OPEN && sharedKey) {
       ws.send(encrypt(JSON.stringify(request), sharedKey))
       return true

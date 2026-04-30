@@ -55,22 +55,30 @@ describe('E2EE integration (simulated mobile ↔ desktop)', () => {
     vi.useRealTimers()
   })
 
+  function completeHandshake(targetChannel = channel, keys = mobileEphemeralKeys): Uint8Array {
+    targetChannel.handleRawMessage(
+      JSON.stringify({
+        type: 'e2ee_hello',
+        publicKeyB64: publicKeyToBase64(keys.publicKey)
+      })
+    )
+    const sharedKey = deriveSharedKey(keys.secretKey, serverKeys.publicKey)
+    targetChannel.handleRawMessage(
+      encrypt(JSON.stringify({ type: 'e2ee_auth', deviceToken: 'device-abc' }), sharedKey)
+    )
+    return sharedKey
+  }
+
   it('full handshake → encrypted RPC round-trip', () => {
-    // Mobile sends e2ee_hello (plaintext)
-    const hello = JSON.stringify({
-      type: 'e2ee_hello',
-      publicKeyB64: publicKeyToBase64(mobileEphemeralKeys.publicKey),
-      deviceToken: 'device-abc'
-    })
-    channel.handleRawMessage(hello)
+    const mobileShared = completeHandshake()
 
-    // Desktop should respond with e2ee_ready
+    // Desktop should respond with plaintext ready, then encrypted auth ack.
     expect(onReady).toHaveBeenCalled()
-    expect(wsSent).toHaveLength(1)
+    expect(wsSent).toHaveLength(2)
     expect(JSON.parse(wsSent[0]!)).toEqual({ type: 'e2ee_ready' })
-
-    // Both sides derive the same shared key
-    const mobileShared = deriveSharedKey(mobileEphemeralKeys.secretKey, serverKeys.publicKey)
+    expect(JSON.parse(decrypt(wsSent[1]!, mobileShared)!)).toEqual({
+      type: 'e2ee_authenticated'
+    })
 
     // Set up the desktop message handler
     const desktopReceived: string[] = []
@@ -86,9 +94,9 @@ describe('E2EE integration (simulated mobile ↔ desktop)', () => {
     // Desktop received the plaintext
     expect(desktopReceived).toEqual([request])
 
-    // Desktop's encrypted reply (wsSent[1]) is decryptable by mobile
-    expect(wsSent).toHaveLength(2)
-    const replyPlain = decrypt(wsSent[1]!, mobileShared)
+    // Desktop's encrypted reply (wsSent[2]) is decryptable by mobile
+    expect(wsSent).toHaveLength(3)
+    const replyPlain = decrypt(wsSent[2]!, mobileShared)
     expect(JSON.parse(replyPlain!)).toEqual({
       id: 'rpc-1',
       ok: true,
@@ -98,13 +106,7 @@ describe('E2EE integration (simulated mobile ↔ desktop)', () => {
 
   it('mobile reconnects with fresh ephemeral key', () => {
     // First connection
-    channel.handleRawMessage(
-      JSON.stringify({
-        type: 'e2ee_hello',
-        publicKeyB64: publicKeyToBase64(mobileEphemeralKeys.publicKey),
-        deviceToken: 'device-abc'
-      })
-    )
+    completeHandshake()
     expect(onReady).toHaveBeenCalledTimes(1)
 
     const firstShared = deriveSharedKey(mobileEphemeralKeys.secretKey, serverKeys.publicKey)
@@ -121,13 +123,7 @@ describe('E2EE integration (simulated mobile ↔ desktop)', () => {
       onError
     })
 
-    newChannel.handleRawMessage(
-      JSON.stringify({
-        type: 'e2ee_hello',
-        publicKeyB64: publicKeyToBase64(newMobileKeys.publicKey),
-        deviceToken: 'device-abc'
-      })
-    )
+    completeHandshake(newChannel, newMobileKeys)
 
     expect(onReady).toHaveBeenCalledTimes(2)
 
@@ -148,15 +144,7 @@ describe('E2EE integration (simulated mobile ↔ desktop)', () => {
   })
 
   it('streaming messages work through E2EE', () => {
-    channel.handleRawMessage(
-      JSON.stringify({
-        type: 'e2ee_hello',
-        publicKeyB64: publicKeyToBase64(mobileEphemeralKeys.publicKey),
-        deviceToken: 'device-abc'
-      })
-    )
-
-    const mobileShared = deriveSharedKey(mobileEphemeralKeys.secretKey, serverKeys.publicKey)
+    const mobileShared = completeHandshake()
     const received: string[] = []
 
     channel.onMessage((plaintext, encryptedReply) => {
@@ -178,14 +166,14 @@ describe('E2EE integration (simulated mobile ↔ desktop)', () => {
       encrypt(JSON.stringify({ id: 'stream-1', method: 'terminal.subscribe' }), mobileShared)
     )
 
-    // 1 e2ee_ready + 3 streaming responses
-    expect(wsSent).toHaveLength(4)
+    // 1 plaintext ready + 1 encrypted auth ack + 3 streaming responses
+    expect(wsSent).toHaveLength(5)
 
-    for (let i = 1; i < 4; i++) {
+    for (let i = 2; i < 5; i++) {
       const plain = decrypt(wsSent[i]!, mobileShared)
       const parsed = JSON.parse(plain!)
       expect(parsed.streaming).toBe(true)
-      expect(parsed.result.chunk).toBe(`line ${i - 1}\n`)
+      expect(parsed.result.chunk).toBe(`line ${i - 2}\n`)
     }
   })
 })

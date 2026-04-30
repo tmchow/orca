@@ -15,7 +15,8 @@ const serverPublicKeyB64 = Buffer.from(serverKeyPair.publicKey).toString('base64
 
 type E2EEState = {
   sharedKey: Uint8Array
-  deviceToken: string
+  deviceToken: string | null
+  authenticated: boolean
 }
 
 function deriveSharedKey(ourSecret: Uint8Array, peerPublic: Uint8Array): Uint8Array {
@@ -223,7 +224,7 @@ wss.on('connection', (ws) => {
 
     if (!e2ee) {
       // Handshake phase — expect e2ee_hello
-      let hello: { type?: string; publicKeyB64?: string; deviceToken?: string }
+      let hello: { type?: string; publicKeyB64?: string }
       try {
         hello = JSON.parse(msg)
       } catch {
@@ -232,16 +233,8 @@ wss.on('connection', (ws) => {
         return
       }
 
-      if (hello.type !== 'e2ee_hello' || !hello.publicKeyB64 || !hello.deviceToken) {
+      if (hello.type !== 'e2ee_hello' || !hello.publicKeyB64) {
         ws.send(JSON.stringify({ type: 'e2ee_error', message: 'Expected e2ee_hello' }))
-        ws.close()
-        return
-      }
-
-      if (hello.deviceToken !== AUTH_TOKEN) {
-        ws.send(
-          JSON.stringify({ ok: false, error: { code: 'unauthorized', message: 'Bad token' } })
-        )
         ws.close()
         return
       }
@@ -254,10 +247,10 @@ wss.on('connection', (ws) => {
       }
 
       const sharedKey = deriveSharedKey(serverKeyPair.secretKey, clientPublicKey)
-      connectionState.set(ws, { sharedKey, deviceToken: hello.deviceToken })
+      connectionState.set(ws, { sharedKey, deviceToken: null, authenticated: false })
 
       ws.send(JSON.stringify({ type: 'e2ee_ready' }))
-      console.log('[mock] E2EE handshake complete')
+      console.log('[mock] E2EE key exchange complete — waiting for encrypted auth')
       return
     }
 
@@ -277,6 +270,25 @@ wss.on('connection', (ws) => {
         e2ee.sharedKey
       )
       ws.send(encrypted)
+      return
+    }
+
+    if (!e2ee.authenticated) {
+      const auth = request as unknown as { type?: string; deviceToken?: string }
+      if (auth.type !== 'e2ee_auth' || auth.deviceToken !== AUTH_TOKEN) {
+        ws.send(
+          e2eeEncrypt(
+            JSON.stringify({ type: 'e2ee_error', error: { code: 'unauthorized' } }),
+            e2ee.sharedKey
+          )
+        )
+        ws.close()
+        return
+      }
+      e2ee.deviceToken = auth.deviceToken
+      e2ee.authenticated = true
+      ws.send(e2eeEncrypt(JSON.stringify({ type: 'e2ee_authenticated' }), e2ee.sharedKey))
+      console.log('[mock] E2EE authentication complete')
       return
     }
 

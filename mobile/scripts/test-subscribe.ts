@@ -2,17 +2,19 @@
  * Lightweight terminal streaming repro for the mobile WebSocket RPC.
  *
  * Usage:
- *   pnpm exec tsx scripts/test-subscribe.ts <deviceToken> [worktreeSelector]
+ *   pnpm exec tsx scripts/test-subscribe.ts <deviceToken> <serverPublicKeyB64> [worktreeSelector]
  *
  * Example:
- *   pnpm exec tsx scripts/test-subscribe.ts "$TOKEN" \
+ *   pnpm exec tsx scripts/test-subscribe.ts "$TOKEN" "$SERVER_PUBLIC_KEY" \
  *     "id:repo-id::/path/to/worktree"
  */
+import nacl from 'tweetnacl'
 import WebSocket from 'ws'
 
 const WS_URL = process.env.ORCA_MOBILE_WS_URL ?? 'ws://127.0.0.1:6768'
 const token = process.argv[2]
-const worktreeSelector = process.argv[3]
+const serverPublicKeyB64 = process.argv[3]
+const worktreeSelector = process.argv[4]
 const marker = `MOBILE_STREAM_${Date.now()}`
 
 type RpcResponse = {
@@ -30,8 +32,10 @@ type PendingRequest = {
   reject: (error: Error) => void
 }
 
-if (!token) {
-  console.error('Usage: pnpm exec tsx scripts/test-subscribe.ts <deviceToken> [worktreeSelector]')
+if (!token || !serverPublicKeyB64) {
+  console.error(
+    'Usage: pnpm exec tsx scripts/test-subscribe.ts <deviceToken> <serverPublicKeyB64> [worktreeSelector]'
+  )
   process.exit(1)
 }
 
@@ -44,15 +48,48 @@ let runtimeId = ''
 let scrollbackCols: number | null = null
 let scrollbackRows: number | null = null
 let serializedLength = 0
+const clientKeys = nacl.box.keyPair()
+const serverPublicKey = Buffer.from(serverPublicKeyB64, 'base64')
+const sharedKey = nacl.box.before(new Uint8Array(serverPublicKey), clientKeys.secretKey)
 
 function nextId(): string {
   reqId += 1
   return `test-${reqId}`
 }
 
+function toBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64')
+}
+
+function fromBase64(value: string): Uint8Array {
+  return new Uint8Array(Buffer.from(value, 'base64'))
+}
+
+function encrypt(plaintext: string): string {
+  const nonce = nacl.randomBytes(nacl.box.nonceLength)
+  const message = new TextEncoder().encode(plaintext)
+  const ciphertext = nacl.box.after(message, nonce, sharedKey)
+  const bundle = new Uint8Array(nonce.length + ciphertext.length)
+  bundle.set(nonce)
+  bundle.set(ciphertext, nonce.length)
+  return toBase64(bundle)
+}
+
+function decrypt(payload: string): string | null {
+  const bundle = fromBase64(payload)
+  const nonce = bundle.subarray(0, nacl.box.nonceLength)
+  const ciphertext = bundle.subarray(nacl.box.nonceLength)
+  const plaintext = nacl.box.open.after(ciphertext, nonce, sharedKey)
+  return plaintext ? new TextDecoder().decode(plaintext) : null
+}
+
+function sendRaw(ws: WebSocket, payload: unknown): void {
+  ws.send(encrypt(JSON.stringify(payload)))
+}
+
 function send(ws: WebSocket, method: string, params?: unknown): Promise<RpcResponse> {
   const id = nextId()
-  ws.send(JSON.stringify({ id, deviceToken: token, method, params }))
+  sendRaw(ws, { id, deviceToken: token, method, params })
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       pending.delete(id)
@@ -136,6 +173,38 @@ async function chooseTerminal(ws: WebSocket, worktree: string): Promise<string> 
 
 async function run(ws: WebSocket): Promise<void> {
   console.log(`connected: ${WS_URL}`)
+  ws.send(JSON.stringify({ type: 'e2ee_hello', publicKeyB64: toBase64(clientKeys.publicKey) }))
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for e2ee_ready')), 5000)
+    ws.once('message', (data) => {
+      clearTimeout(timeout)
+      const msg = JSON.parse(data.toString()) as { type?: string }
+      if (msg.type !== 'e2ee_ready') {
+        reject(new Error(`Unexpected handshake response: ${data.toString()}`))
+        return
+      }
+      resolve()
+    })
+  })
+
+  sendRaw(ws, { type: 'e2ee_auth', deviceToken: token })
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error('Timed out waiting for e2ee_authenticated')),
+      5000
+    )
+    ws.once('message', (data) => {
+      clearTimeout(timeout)
+      const plaintext = decrypt(data.toString())
+      const msg = plaintext ? (JSON.parse(plaintext) as { type?: string }) : null
+      if (msg?.type !== 'e2ee_authenticated') {
+        reject(new Error(`Unexpected auth response: ${data.toString()}`))
+        return
+      }
+      resolve()
+    })
+  })
+
   const worktree = await chooseWorktree(ws)
   const handle = await chooseTerminal(ws, worktree)
   activeHandle = handle
@@ -198,7 +267,9 @@ ws.on('open', () => {
 })
 
 ws.on('message', (data) => {
-  const response = JSON.parse(data.toString()) as RpcResponse
+  const plaintext = decrypt(data.toString())
+  if (!plaintext) return
+  const response = JSON.parse(plaintext) as RpcResponse
   if (response._meta?.runtimeId) {
     runtimeId = response._meta.runtimeId
   }
