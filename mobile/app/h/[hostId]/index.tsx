@@ -499,9 +499,11 @@ export default function HostScreen() {
   const openWorktreeSession = useCallback(
     (item: Worktree) => {
       if (client && connState === 'connected') {
-        void client.sendRequest('worktree.activate', {
-          worktree: `id:${item.worktreeId}`
-        })
+        void client
+          .sendRequest('worktree.activate', {
+            worktree: `id:${item.worktreeId}`
+          })
+          .catch(() => null)
       }
       router.push(
         `/h/${hostId}/session/${encodeURIComponent(item.worktreeId)}?name=${encodeURIComponent(item.displayName || item.repo)}`
@@ -972,9 +974,11 @@ export default function HostScreen() {
                       onPress: () => {
                         if (client) {
                           setSleptIds((prev) => new Set(prev).add(actionTarget.worktreeId))
-                          void client.sendRequest('worktree.sleep', {
-                            worktree: `id:${actionTarget.worktreeId}`
-                          })
+                          void client
+                            .sendRequest('worktree.sleep', {
+                              worktree: `id:${actionTarget.worktreeId}`
+                            })
+                            .catch(() => null)
                         }
                         setActionTarget(null)
                       }

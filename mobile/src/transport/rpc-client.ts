@@ -264,9 +264,10 @@ export function connect(
   }
 
   function rejectAllPending(reason: string) {
+    const error = new Error(reason)
     for (const [id, req] of pending) {
-      req.reject(new Error(reason))
       pending.delete(id)
+      queueMicrotask(() => req.reject(error))
     }
   }
 
