@@ -8,7 +8,8 @@ import {
   Pressable,
   KeyboardAvoidingView,
   Platform,
-  ActivityIndicator
+  ActivityIndicator,
+  type LayoutChangeEvent
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useLocalSearchParams, useRouter } from 'expo-router'
@@ -46,6 +47,7 @@ type TerminalCreateResult = {
 }
 
 type AccessoryKey = { label: string; bytes: string; accessibilityLabel?: string }
+type TerminalViewport = { width: number; height: number }
 
 const ACCESSORY_KEYS: AccessoryKey[] = [
   { label: 'Esc', bytes: '\x1b' },
@@ -96,12 +98,14 @@ function TerminalPaneView({
   handle,
   active,
   onRef,
-  onWebReady
+  onWebReady,
+  onLayout
 }: {
   handle: string
   active: boolean
   onRef: (handle: string, ref: TerminalWebViewHandle | null) => void
   onWebReady: (handle: string) => void
+  onLayout: (handle: string, viewport: TerminalViewport) => void
 }) {
   const setRef = useCallback(
     (ref: TerminalWebViewHandle | null) => {
@@ -109,9 +113,19 @@ function TerminalPaneView({
     },
     [handle, onRef]
   )
+  const handleLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const { width, height } = event.nativeEvent.layout
+      if (width > 0 && height > 0) {
+        onLayout(handle, { width, height })
+      }
+    },
+    [handle, onLayout]
+  )
 
   return (
     <View
+      onLayout={handleLayout}
       pointerEvents={active ? 'auto' : 'none'}
       style={[styles.terminalPane, !active && styles.terminalPaneHidden]}
     >
@@ -183,6 +197,7 @@ export default function SessionScreen() {
   // Without this, switching away and back would auto-fit them again.
   const manuallyRestoredRef = useRef<Set<string>>(new Set())
   const terminalRefs = useRef<Map<string, TerminalWebViewHandle>>(new Map())
+  const terminalViewportRef = useRef<Map<string, TerminalViewport>>(new Map())
   const terminalUnsubsRef = useRef<Map<string, () => void>>(new Map())
   const subscribingHandlesRef = useRef<Set<string>>(new Set())
   const initializedHandlesRef = useRef<Set<string>>(new Set())
@@ -195,6 +210,10 @@ export default function SessionScreen() {
 
   const getTerminalRef = useCallback((handle: string | null) => {
     return handle ? terminalRefs.current.get(handle) : undefined
+  }, [])
+
+  const setTerminalViewport = useCallback((handle: string, viewport: TerminalViewport) => {
+    terminalViewportRef.current.set(handle, viewport)
   }, [])
 
   const unsubscribeTerminal = useCallback((handle: string) => {
@@ -301,7 +320,9 @@ export default function SessionScreen() {
       // accessory/input chrome has fully settled. Waiting matches the remount
       // path, where phone-fit already gets the correct unobscured height.
       await waitForFitLayoutSettle()
-      const dims = await getTerminalRef(handle)?.measureFitDimensions()
+      const dims = await getTerminalRef(handle)?.measureFitDimensions(
+        terminalViewportRef.current.get(handle)
+      )
       if (!dims) return
       if (
         clientRef.current !== rpcClient ||
@@ -520,7 +541,9 @@ export default function SessionScreen() {
             // is already at the correct phone size.
             if (shouldAutoFit && !fitPendingRef.current) {
               void (async () => {
-                const dims = await getTerminalRef(handle)?.measureFitDimensions()
+                const dims = await getTerminalRef(handle)?.measureFitDimensions(
+                  terminalViewportRef.current.get(handle)
+                )
                 if (!dims) return
                 if (cols !== dims.cols || rows !== dims.rows) {
                   if (
@@ -695,6 +718,7 @@ export default function SessionScreen() {
         subscribeToTerminal(handle)
       } else {
         terminalRefs.current.delete(handle)
+        terminalViewportRef.current.delete(handle)
       }
     },
     [subscribeToTerminal]
@@ -950,6 +974,7 @@ export default function SessionScreen() {
                 active={terminal.handle === activeHandle}
                 onRef={setTerminalWebViewRef}
                 onWebReady={handleTerminalWebReady}
+                onLayout={setTerminalViewport}
               />
             ))}
           </View>
